@@ -9,19 +9,11 @@ const c = @cImport({
 const Coordinate = [2]u8;
 const Domino = [2]u8;
 
-const Orientation = enum { unplaced, right, up, left, down };
+const Orientation = enum { right, up, left, down };
 
 const RegionType = enum { sum, equals, notEquals, greater, less, empty };
 
-const UnsetPip: i8 = 7; // Need a constant that's not 0-6 but also unsigned
-
-// const NYTRegionType = enum {
-//     empty,
-//     greater,
-//     sum,
-//     equals,
-//     less,
-// };
+const UnsetPip: u8 = 7; // Need a constant that's not 0-6 but also unsigned
 
 const Region = struct {
     indices: []Coordinate,
@@ -29,16 +21,11 @@ const Region = struct {
     target: u8 = 0,
 };
 
-// const NTYPuzzle = struct {
-//     dominoes: []Domino,
-//     regions: []NYTRegion,
-//     placedDominoes: std.ArrayList(DominoPlace) = std.ArrayList(DominoPlace).empty,
-// };
-
 const NYTFormat = struct {
     printDate: []u8,
     editor: []u8,
     easy: Puzzle,
+    medium: Puzzle,
 };
 
 const DominoPlace = struct {
@@ -52,17 +39,23 @@ const DominoPlace = struct {
             .left => .{ self.c[0], self.c[1] - 1 },
             .down => .{ self.c[0] + 1, self.c[1] },
             .up => .{ self.c[0] - 1, self.c[1] },
-            .unplaced => self.c, // or handle differently if needed
         };
     }
 
+    fn isValid(self: DominoPlace) bool {
+        switch (self.o) {
+            .right, .down => return true,
+            .left => return self.c[1] != 0,
+            .up => return self.c[0] != 0,
+        }
+    }
+
     fn coords(self: DominoPlace) [2]Coordinate {
-        std.debug.assert(self.o != .unplaced);
         return [2]Coordinate{ self.d, self.secondCoord() };
     }
 };
 
-fn areCoordinatesEqual(a: Coordinate, b: Coordinate) bool {
+fn coordEql(a: Coordinate, b: Coordinate) bool {
     return a[0] == b[0] and a[1] == b[1];
 }
 
@@ -84,11 +77,11 @@ const Puzzle = struct {
             for (region.indices) |coord| {
                 std.debug.print("s: {d}, {d}\n", .{ coord[0], coord[1] });
 
-                if (!foundFirst and areCoordinatesEqual(coord, d.c)) {
+                if (!foundFirst and coordEql(coord, d.c)) {
                     std.debug.print("first\n", .{});
                     foundFirst = true;
                 }
-                if (!foundSecond and areCoordinatesEqual(coord, secondCoord)) {
+                if (!foundSecond and coordEql(coord, secondCoord)) {
                     std.debug.print("second\n", .{});
                     foundSecond = true;
                 }
@@ -96,19 +89,6 @@ const Puzzle = struct {
         }
         if (foundFirst and foundSecond) return true;
         return false;
-    }
-
-    pub fn place(self: *Puzzle, i: usize, coord: Coordinate, o: Orientation) !void {
-        const domino = DominoPlace{
-            .d = self.dominoes[i],
-            .c = coord,
-            .o = o,
-        };
-
-        if (!self.isDominoPartOfSection(domino)) {
-            return error.InvalidPlacement;
-        }
-        self.placedDominoes.appendAssumeCapacity(domino);
     }
 
     pub fn init(self: *Puzzle, gpa: std.mem.Allocator) !void {
@@ -156,8 +136,7 @@ const Puzzle = struct {
         }
     };
 
-    pub fn validateSolution(self: *Puzzle, gpa: std.mem.Allocator) !bool {
-        // Build the map
+    pub fn maxXY(self: *Puzzle) [2]usize {
         var maxX: usize = 0;
         var maxY: usize = 0;
         for (self.regions) |region| {
@@ -166,29 +145,43 @@ const Puzzle = struct {
                 maxY = @max(coord[1], maxY);
             }
         }
+        return .{ maxX, maxY };
+    }
 
-        std.debug.print("map {} x {}\n", .{ maxX, maxY });
-        var map = try Map.init(gpa, maxX, maxY);
-
-        defer map.deinit(gpa);
-        // Fill in with set dominoes
-        for (self.placedDominoes.items) |domino| {
-            if (!map.setIfUnset(domino.c[0], domino.c[1], domino.d[0])) {
-                return false;
-            }
-            if (!map.setIfUnset(domino.secondCoord()[0], domino.secondCoord()[1], domino.d[1])) {
-                return false;
-            }
+    pub fn dominoAt(self: *Puzzle, coord: Coordinate) ?DominoPlace {
+        for (self.placedDominoes.items) |p| {
+            if (std.mem.eql(u8, &p.c, &coord)) return p.d;
         }
+        return null;
+    }
+
+    pub fn pipAt(self: *Puzzle, coord: Coordinate) ?u8 {
+        for (self.placedDominoes.items) |p| {
+            if (std.mem.eql(u8, &p.c, &coord)) return p.d[0];
+            if (std.mem.eql(u8, &p.c, &p.secondCoord())) return p.d[1];
+        }
+        return null;
+    }
+
+    pub fn sumRegion(self: *Puzzle, region: *const Region) i32 {
+        var sum: i32 = 0;
+        for (region.indices) |coord| {
+            sum += @intCast(self.pipAt(coord) orelse 0);
+        }
+        return sum;
+    }
+
+    pub fn validateSolution(self: *Puzzle) bool {
+        // Pre-check for invariants
 
         for (self.regions) |region| {
             // Validate the total pips against the section requirement
             switch (region.type) {
-                .sum => {
+                .sum => { // TODO only fail if greater, move final check to endstep
                     std.debug.print("checking sum {}\n", .{region.target});
                     var sum: i32 = 0;
                     for (region.indices) |coord| {
-                        sum += @intCast(map.at(coord[0], coord[1]).*);
+                        sum += @intCast(self.pipAt(coord));
                     }
                     if (sum != region.target) {
                         std.debug.print("Section requirement not met: expected = {d}, got {d}\n", .{ region.target, sum });
@@ -199,7 +192,7 @@ const Puzzle = struct {
                     std.debug.print("checking sum greaterThan {}\n", .{region.target});
                     var sum: i32 = 0;
                     for (region.indices) |coord| {
-                        sum += @intCast(map.at(coord[0], coord[1]).*);
+                        sum += @intCast(self.pipAt(coord));
                     }
                     if (sum <= region.target) {
                         std.debug.print("Section requirement not met: expected > {d}, got {d}\n", .{ region.target, sum });
@@ -210,7 +203,7 @@ const Puzzle = struct {
                     std.debug.print("checking sum lessThan {}\n", .{region.target});
                     var sum: usize = 0;
                     for (region.indices) |coord| {
-                        sum += @intCast(map.at(coord[0], coord[1]).*);
+                        sum += @intCast(self.pipAt(coord));
                     }
                     if (sum >= region.target) {
                         std.debug.print("Section requirement not met: expected < {d}, got {d}\n", .{ region.target, sum });
@@ -218,20 +211,20 @@ const Puzzle = struct {
                     }
                 },
                 .equals => {
-                    std.debug.print("checking equal\n", .{});
-                    const val = map.at(region.indices[0][0], region.indices[0][1]).*;
-                    for (region.indices) |coord| {
-                        if (map.at(coord[0], coord[1]).* != val) {
-                            std.debug.print("Section requirement not met: expected = {d}, got {d}\n", .{ val, map.at(coord[0], coord[1]).* });
-                            return false;
-                        }
-                    }
+                    // std.debug.print("checking equal\n", .{});
+                    // const val = self.dominoAt(region.indices[0], region.indices[0]) orelse continue;
+                    // for (region.indices) |coord| {
+                    //     if (self.pipAt(coord[0], coord[1]).* != val) {
+                    //         std.debug.print("Section requirement not met: expected = {d}, got {d}\n", .{ val, self.pipAt(coord[0], coord[1]).* });
+                    //         return false;
+                    //     }
+                    // }
                 },
                 .notEquals => {
                     std.debug.print("checking not equal\n", .{});
                     var found: [7]bool = [_]bool{false} ** 7;
                     for (region.indices) |coord| {
-                        const value = map.at(coord[0], coord[1]).*;
+                        const value = self.pipAt(coord);
                         if (found[@intCast(value)]) {
                             std.debug.print("Section requirement not met: already found {}\n", .{value});
                             return false;
@@ -240,25 +233,224 @@ const Puzzle = struct {
                         }
                     }
                 },
-                .empty => {
-                    std.debug.print("checking empty\n", .{});
-                    for (region.indices) |coord| {
-                        if (map.at(coord[0], coord[1]).* == UnsetPip) {
-                            return false;
-                        }
-                    }
+                .empty => { // TODO: Move this to the very end, it should be the last invariant
+                    // std.debug.print("checking empty\n", .{});
+                    // for (region.indices) |coord| {
+                    //     if (map.at(coord[0], coord[1]).* == UnsetPip) {
+                    //         return false;
+                    //     }
+                    // }
                 },
             }
         }
         return true;
     }
+};
 
-    pub fn draw(self: *Puzzle, plane: *c.ncplane) void {
-        //const chan: c_uint = 0;
-        //chan.rgb(100, 100, 100);
+// Can be bumped later
+const MAX_DOMINOES = 32;
+const MAX_INDICES = 8;
+
+const Solver = struct {
+    puzzle: *Puzzle,
+    plane: ?*c.ncplane,
+    last_failure: []const u8 = "",
+    last_failure_buf: [128]u8 = undefined,
+    nc: *c.notcurses,
+    io: std.Io,
+    stats: Stats = .{},
+    placedDominoes: [MAX_DOMINOES]DominoPlace = undefined,
+    pipCache: [MAX_INDICES]u8 = undefined,
+
+    const Stats = struct {
+        waits: usize = 0,
+    };
+
+    pub fn init(puzzle: *Puzzle, plane: *c.ncplane, nc: *c.notcurses, io: std.Io) Solver {
+        return .{
+            .puzzle = puzzle,
+            .plane = plane,
+            .nc = nc,
+            .io = io,
+        };
+    }
+
+    pub fn solve(self: *Solver, gpa: std.mem.Allocator, index: usize) !bool {
+        // TODO move this out of recursion
+        var coords = std.ArrayList(Coordinate).empty;
+        defer coords.deinit(gpa);
+        for (self.puzzle.regions) |region| {
+            for (region.indices) |i| {
+                try coords.append(gpa, i);
+            }
+        }
+
+        //if (index == self.puzzle.dominoes.len) return true; // Done!
+
+        //var ninput: c.ncinput = undefined;
+        for (coords.items) |coord| {
+            inline for (std.meta.fields(Orientation)) |field| {
+                const orientation = @field(Orientation, field.name);
+                const dp = DominoPlace{
+                    .c = coord,
+                    .d = self.puzzle.dominoes[index],
+                    .o = orientation,
+                };
+                if (self.canPlace(dp)) {
+                    try self.puzzle.placedDominoes.append(gpa, dp);
+                    const validated = self.validate();
+                    self.draw();
+                    _ = c.notcurses_render(self.nc);
+                    _ = self.waitFor(&[_]u32{'e'});
+
+                    if (validated) {
+                        return true;
+                    }
+
+                    if (try self.solve(gpa, index + 1)) return true;
+
+                    _ = self.puzzle.placedDominoes.pop();
+                    //std.debug.print("key {d}", .{self.waitFor(&[_]u32{'e'})});
+                }
+                //_ = c.notcurses_get_blocking(self.nc, &ninput);
+            }
+        }
+        return false;
+    }
+
+    pub fn waitFor(self: *Solver, allowed: []const u32) u32 {
+        var ninput: c.ncinput = undefined;
+        while (true) {
+            _ = c.notcurses_get_blocking(self.nc, &ninput);
+            if (std.mem.findScalar(u32, allowed, ninput.id)) |_| {
+                if (ninput.evtype != c.NCTYPE_PRESS) continue;
+                self.stats.waits += 1;
+                return ninput.id;
+            }
+        }
+    }
+
+    fn errMsg(self: *Solver, comptime fmt: []const u8, args: anytype) void {
+        self.last_failure = std.fmt.bufPrint(&self.last_failure_buf, fmt, args) catch "format error";
+    }
+
+    fn canPlace(self: *Solver, dp: DominoPlace) bool {
+        if (!dp.isValid()) return false;
+        for (self.puzzle.placedDominoes.items) |d| {
+            if (coordEql(d.c, dp.c) or coordEql(d.secondCoord(), dp.c) or coordEql(d.c, dp.secondCoord()) or coordEql(d.secondCoord(), dp.secondCoord())) return false;
+        }
+        // maybe just check secondCoord
+        var matchedFirst = false;
+        var matchedSecond = false;
+        for (self.puzzle.regions) |region| {
+            for (region.indices) |i| {
+                if (coordEql(i, dp.c)) matchedFirst = true;
+                if (coordEql(i, dp.secondCoord())) matchedSecond = true;
+            }
+        }
+        if (!(matchedFirst and matchedSecond)) return false;
+        return true;
+    }
+
+    pub fn validate(self: *Solver) bool {
+        // Check invariants first
+        for (self.puzzle.regions) |region| {
+            switch (region.type) {
+                .empty, .greater => {},
+                .sum => {
+                    const s = self.puzzle.sumRegion(&region);
+                    if (s > region.target) {
+                        self.errMsg("target ={d} fails, found {d}", .{ region.target, s });
+                        return false;
+                    }
+                },
+                .less => {
+                    const s = self.puzzle.sumRegion(&region);
+                    if (s > region.target) {
+                        self.errMsg("target <{d} fails, found {d}", .{ region.target, s });
+                        return false;
+                    }
+                },
+                .equals => {
+                    var firstFoundPip: u8 = UnsetPip;
+                    for (region.indices) |i| {
+                        const d = self.puzzle.pipAt(i) orelse continue;
+                        if (firstFoundPip == UnsetPip) {
+                            firstFoundPip = d;
+                        } else if (d != firstFoundPip) {
+                            self.errMsg("target = fails, found {d} then {d}", .{ firstFoundPip, d });
+                            return false;
+                        }
+                    }
+                },
+                .notEquals => {
+                    var found: [7]bool = [_]bool{false} ** 7;
+                    for (region.indices) |coord| {
+                        const value = self.puzzle.pipAt(coord) orelse continue;
+                        if (found[@intCast(value)]) {
+                            std.debug.print("Section requirement not met: already found {}\n", .{value});
+                            return false;
+                        } else {
+                            found[@intCast(value)] = true;
+                        }
+                    }
+                },
+            }
+        }
+        // Good idea below, but we already know if the map is filled based on if all dominoes are placed
+        // If not yet full, no errors but not validated
+        // for (self.puzzle.regions) |region| {
+        //     for (region.indices) |i| {
+        //         var found = false;
+        //         for (self.puzzle.placedDominoes.items) |dp| {
+        //             if (coordEql(dp.c, i) or coordEql(dp.secondCoord(), i)) {
+        //                 found = true;
+        //                 break;
+        //             }
+        //         }
+        //         if (!found) {
+        //             self.errMsg("not full", .{});
+        //             return false;
+        //         }
+        //     }
+        // }
+
+        // If full, check all regions exactly
+        self.errMsg("fin", .{});
+        return false;
+    }
+
+    pub fn drawLegend(self: *const Solver, plane: *c.ncplane) void {
         var bg_palindex: c_uint = 0;
         _ = plane.set_fg_palindex(0);
-        for (self.regions) |region| {
+        for (self.puzzle.regions) |region| {
+            if (region.type == .empty) continue;
+            bg_palindex += 1;
+            const y_index: c_int = @as(c_int, @intCast(bg_palindex));
+            _ = plane.set_bg_palindex(bg_palindex);
+            _ = plane.putchar_yx(y_index, 2, ' ');
+            _ = plane.set_bg_default();
+            _ = plane.set_fg_default();
+            var buf: [4]u8 = undefined;
+            const str = switch (region.type) {
+                .empty => "",
+                .equals => "=",
+                .notEquals => "!=",
+                .sum => std.fmt.bufPrintZ(&buf, "={d}", .{region.target}) catch "=format error",
+                .greater => std.fmt.bufPrintZ(&buf, ">{d}", .{region.target}) catch ">format error",
+                .less => std.fmt.bufPrintZ(&buf, "<{d}", .{region.target}) catch "<format error",
+            };
+            _ = plane.putstr_yx(y_index, 4, str.ptr);
+        }
+        _ = plane.cursor_move_yx(0, 0);
+        _ = plane.rounded_box(0, 0, bg_palindex + 1, 10, 0);
+    }
+
+    pub fn draw(self: *const Solver) void {
+        const plane = self.plane orelse return;
+        var bg_palindex: c_uint = 0;
+        _ = plane.set_fg_palindex(0);
+        for (self.puzzle.regions) |region| {
             if (region.type == .empty) {
                 _ = plane.set_bg_palindex(15);
             } else {
@@ -266,22 +458,26 @@ const Puzzle = struct {
                 _ = plane.set_bg_palindex(bg_palindex);
             }
             for (region.indices) |coord| {
-                _ = plane.putchar_yx(coord[0], coord[1], ' ');
-                //var cell: c.nccell = undefined;
-                //_ = c.ncplane_at_cursor_cell(plane, &cell);
-                //_ = c.nccell_set_bg_rgb8(&cell, 0x99, 0x00, 0xCC);
-                //cell.channels |= c.NCALPHA_OPAQUE;
-
-                //_ = c.ncplane_putc(plane, &cell);
-                //c.nccell_release(plane, &cell);
-                //plane.set_bg_rgb(chan);
+                var pip: u8 = ' ';
+                for (self.puzzle.placedDominoes.items) |p| {
+                    if (std.mem.eql(u8, &p.c, &coord)) {
+                        pip = p.d[0] + '0';
+                        break;
+                    }
+                    if (std.mem.eql(u8, &p.secondCoord(), &coord)) {
+                        pip = p.d[1] + '0';
+                        break;
+                    }
+                }
+                _ = plane.putchar_yx(coord[0], coord[1], pip);
             }
         }
+        // Draw errMsg
+        _ = plane.putstr_yx(10, 10, self.last_failure.ptr);
     }
 };
 
 pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, ignoring potential errors.
     const allocator = init.gpa;
 
     var args = init.minimal.args.iterate();
@@ -304,15 +500,33 @@ pub fn main(init: std.process.Init) !void {
     try puzzle.init(allocator);
     defer puzzle.deinit(allocator);
 
-    try puzzle.place(0, Coordinate{ 0, 0 }, Orientation.right);
-    _ = try puzzle.validateSolution(allocator);
+    //try puzzle.place(0, Coordinate{ 0, 0 }, Orientation.right);
 
     var nc = c.notcurses_init(null, null) orelse return error.UnexpectedError;
-    defer _ = nc.stop();
 
     const stdplane = nc.notcurses_stdplane() orelse return error.UnexpectedError;
 
-    puzzle.draw(stdplane);
+    var solver = Solver{
+        .puzzle = &puzzle,
+        .plane = stdplane,
+        .nc = nc,
+        .io = init.io,
+    };
+    _ = try solver.solve(allocator, 0);
+    solver.draw();
+    const legendOpts = c.ncplane_options{
+        .y = 0,
+        .x = 8,
+        .rows = 16,
+        .cols = 16,
+        .userptr = null,
+        .name = "legend",
+        .resizecb = null,
+        .flags = 0,
+    };
+    const legendPlane = stdplane.create(&legendOpts).?;
+    solver.drawLegend(legendPlane);
     _ = c.notcurses_render(nc);
-    init.io.sleep(.fromSeconds(15), .awake) catch {};
+    _ = nc.stop();
+    std.debug.print("waits={}", .{solver.stats.waits});
 }
