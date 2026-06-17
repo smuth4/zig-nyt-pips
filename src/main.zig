@@ -64,33 +64,6 @@ const Puzzle = struct {
     dominoes: []Domino,
     placedDominoes: std.ArrayList(DominoPlace) = std.ArrayList(DominoPlace).empty,
 
-    fn isDominoPartOfSection(self: *Puzzle, d: DominoPlace) bool {
-        // Calculate the second coordinate based on orientation
-        const secondCoord = d.secondCoord();
-        std.debug.print("d: {d}, {d}\n", .{ d.c[0], d.c[1] });
-        std.debug.print("d2: {d}, {d}\n", .{ secondCoord[0], secondCoord[1] });
-
-        var foundFirst = false;
-        var foundSecond = false;
-        for (self.regions) |region| {
-            // Check if both coordinates of the domino are in the section
-            for (region.indices) |coord| {
-                std.debug.print("s: {d}, {d}\n", .{ coord[0], coord[1] });
-
-                if (!foundFirst and coordEql(coord, d.c)) {
-                    std.debug.print("first\n", .{});
-                    foundFirst = true;
-                }
-                if (!foundSecond and coordEql(coord, secondCoord)) {
-                    std.debug.print("second\n", .{});
-                    foundSecond = true;
-                }
-            }
-        }
-        if (foundFirst and foundSecond) return true;
-        return false;
-    }
-
     pub fn init(self: *Puzzle, gpa: std.mem.Allocator) !void {
         try self.placedDominoes.ensureTotalCapacity(gpa, self.dominoes.len);
     }
@@ -98,43 +71,6 @@ const Puzzle = struct {
     pub fn deinit(self: *Puzzle, gpa: std.mem.Allocator) void {
         self.placedDominoes.deinit(gpa);
     }
-
-    const Map = struct {
-        const KeyType = u8;
-        map: std.ArrayList(KeyType),
-        maxX: usize = 0,
-        maxY: usize = 0,
-        pub fn deinit(self: *Map, gpa: std.mem.Allocator) void {
-            self.map.deinit(gpa);
-        }
-
-        pub fn init(gpa: std.mem.Allocator, maxX: usize, maxY: usize) !Map {
-            var m = Map{
-                .map = try std.ArrayList(KeyType).initCapacity(gpa, (maxX + 1) * (maxY + 1)),
-                .maxX = maxX,
-                .maxY = maxY,
-            };
-            //try m.map.initCapacity(gpa, (maxX + 1) * (maxY + 1));
-            try m.map.appendNTimes(gpa, UnsetPip, (maxX + 1) * (maxY + 1));
-            return m;
-        }
-
-        pub fn setIfUnset(self: *Map, x: usize, y: usize, value: KeyType) bool {
-            const val = self.at(x, y);
-            if (val.* == UnsetPip) {
-                std.debug.print("setting {}x{} to {}\n", .{ x, y, value });
-                val.* = value;
-                return true;
-            }
-            std.debug.print("Overlap at {}x{} (set to {})", .{ x, y, val.* });
-            return false;
-        }
-
-        pub fn at(self: *Map, x: usize, y: usize) *KeyType {
-            std.debug.print("fetching {}x{} (i {})\n", .{ x, y, (y * (self.maxX + 1)) + x });
-            return &self.map.items[(y * (self.maxX + 1)) + x];
-        }
-    };
 
     pub fn maxXY(self: *Puzzle) [2]usize {
         var maxX: usize = 0;
@@ -169,81 +105,6 @@ const Puzzle = struct {
             sum += @intCast(self.pipAt(coord) orelse 0);
         }
         return sum;
-    }
-
-    pub fn validateSolution(self: *Puzzle) bool {
-        // Pre-check for invariants
-
-        for (self.regions) |region| {
-            // Validate the total pips against the section requirement
-            switch (region.type) {
-                .sum => { // TODO only fail if greater, move final check to endstep
-                    std.debug.print("checking sum {}\n", .{region.target});
-                    var sum: i32 = 0;
-                    for (region.indices) |coord| {
-                        sum += @intCast(self.pipAt(coord));
-                    }
-                    if (sum != region.target) {
-                        std.debug.print("Section requirement not met: expected = {d}, got {d}\n", .{ region.target, sum });
-                        return false;
-                    }
-                },
-                .greater => {
-                    std.debug.print("checking sum greaterThan {}\n", .{region.target});
-                    var sum: i32 = 0;
-                    for (region.indices) |coord| {
-                        sum += @intCast(self.pipAt(coord));
-                    }
-                    if (sum <= region.target) {
-                        std.debug.print("Section requirement not met: expected > {d}, got {d}\n", .{ region.target, sum });
-                        return false;
-                    }
-                },
-                .less => {
-                    std.debug.print("checking sum lessThan {}\n", .{region.target});
-                    var sum: usize = 0;
-                    for (region.indices) |coord| {
-                        sum += @intCast(self.pipAt(coord));
-                    }
-                    if (sum >= region.target) {
-                        std.debug.print("Section requirement not met: expected < {d}, got {d}\n", .{ region.target, sum });
-                        return false;
-                    }
-                },
-                .equals => {
-                    // std.debug.print("checking equal\n", .{});
-                    // const val = self.dominoAt(region.indices[0], region.indices[0]) orelse continue;
-                    // for (region.indices) |coord| {
-                    //     if (self.pipAt(coord[0], coord[1]).* != val) {
-                    //         std.debug.print("Section requirement not met: expected = {d}, got {d}\n", .{ val, self.pipAt(coord[0], coord[1]).* });
-                    //         return false;
-                    //     }
-                    // }
-                },
-                .notEquals => {
-                    std.debug.print("checking not equal\n", .{});
-                    var found: [7]bool = [_]bool{false} ** 7;
-                    for (region.indices) |coord| {
-                        const value = self.pipAt(coord);
-                        if (found[@intCast(value)]) {
-                            std.debug.print("Section requirement not met: already found {}\n", .{value});
-                            return false;
-                        } else {
-                            found[@intCast(value)] = true;
-                        }
-                    }
-                },
-                .empty => { // TODO: Move this to the very end, it should be the last invariant
-                    // std.debug.print("checking empty\n", .{});
-                    // for (region.indices) |coord| {
-                    //     if (map.at(coord[0], coord[1]).* == UnsetPip) {
-                    //         return false;
-                    //     }
-                    // }
-                },
-            }
-        }
-        return true;
     }
 };
 
