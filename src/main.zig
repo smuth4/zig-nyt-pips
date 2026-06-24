@@ -110,29 +110,40 @@ const Puzzle = struct {
 
 // Can be bumped later
 const MAX_DOMINOES = 32;
-const MAX_INDICES = 8;
+const MAX_INDICES = 16;
 
 const Solver = struct {
     puzzle: *Puzzle,
     plane: ?*c.ncplane,
-    last_failure: []const u8 = "",
-    last_failure_buf: [128]u8 = undefined,
-    nc: *c.notcurses,
+    nc: ?*c.notcurses, // If null, no UI
     io: std.Io,
     stats: Stats = .{},
+    last_failure: []const u8 = "",
+    last_failure_buf: [128]u8 = undefined,
     placedDominoes: [MAX_DOMINOES]DominoPlace = undefined,
+    indices: [MAX_INDICES]Coordinate,
     pipCache: [MAX_INDICES]u8 = undefined,
 
     const Stats = struct {
         waits: usize = 0,
     };
 
-    pub fn init(puzzle: *Puzzle, plane: *c.ncplane, nc: *c.notcurses, io: std.Io) Solver {
+    pub fn init(puzzle: *Puzzle, plane: ?*c.ncplane, nc: ?*c.notcurses, io: std.Io) Solver {
+        var indices: [MAX_INDICES]Coordinate = undefined;
+        var ic: usize = 0;
+        for (puzzle.regions) |region| {
+            for (region.indices) |i| {
+                indices[ic] = i;
+                ic += 1;
+            }
+        }
+
         return .{
             .puzzle = puzzle,
             .plane = plane,
             .nc = nc,
             .io = io,
+            .indices = indices,
         };
     }
 
@@ -146,9 +157,6 @@ const Solver = struct {
             }
         }
 
-        //if (index == self.puzzle.dominoes.len) return true; // Done!
-
-        //var ninput: c.ncinput = undefined;
         for (coords.items) |coord| {
             inline for (std.meta.fields(Orientation)) |field| {
                 const orientation = @field(Orientation, field.name);
@@ -160,20 +168,35 @@ const Solver = struct {
                 if (self.canPlace(dp)) {
                     try self.puzzle.placedDominoes.append(gpa, dp);
                     const validated = self.validate();
-                    self.draw();
-                    _ = c.notcurses_render(self.nc);
-                    _ = self.waitFor(&[_]u32{'e'});
+                    if (self.nc) |_| {
+                        self.draw();
+                        _ = c.notcurses_render(self.nc);
+                        //_ = self.waitFor(&[_]u32{'e'});
+                    } else {
+                        std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
+                            dp.d[0],
+                            dp.d[1],
+                            dp.c[0],
+                            dp.c[1],
+                            if (validated) "success" else "error: ",
+                            self.last_failure,
+                        });
+                    }
 
                     if (validated) {
+                        _ = self.waitFor(&[_]u32{'e'});
                         return true;
+                    }
+
+                    if (index == self.puzzle.dominoes.len - 1) {
+                        _ = self.puzzle.placedDominoes.pop();
+                        return false;
                     }
 
                     if (try self.solve(gpa, index + 1)) return true;
 
                     _ = self.puzzle.placedDominoes.pop();
-                    //std.debug.print("key {d}", .{self.waitFor(&[_]u32{'e'})});
                 }
-                //_ = c.notcurses_get_blocking(self.nc, &ninput);
             }
         }
         return false;
@@ -249,7 +272,7 @@ const Solver = struct {
                     for (region.indices) |coord| {
                         const value = self.puzzle.pipAt(coord) orelse continue;
                         if (found[@intCast(value)]) {
-                            std.debug.print("Section requirement not met: already found {}\n", .{value});
+                            self.errMsg("target != fails, already found {d}\n", .{value});
                             return false;
                         } else {
                             found[@intCast(value)] = true;
@@ -258,26 +281,7 @@ const Solver = struct {
                 },
             }
         }
-        // Good idea below, but we already know if the map is filled based on if all dominoes are placed
-        // If not yet full, no errors but not validated
-        // for (self.puzzle.regions) |region| {
-        //     for (region.indices) |i| {
-        //         var found = false;
-        //         for (self.puzzle.placedDominoes.items) |dp| {
-        //             if (coordEql(dp.c, i) or coordEql(dp.secondCoord(), i)) {
-        //                 found = true;
-        //                 break;
-        //             }
-        //         }
-        //         if (!found) {
-        //             self.errMsg("not full", .{});
-        //             return false;
-        //         }
-        //     }
-        // }
-
-        // If full, check all regions exactly
-        self.errMsg("fin", .{});
+        self.errMsg("valid but not full", .{});
         return false;
     }
 
@@ -308,6 +312,7 @@ const Solver = struct {
     }
 
     pub fn draw(self: *const Solver) void {
+        _ = self.nc orelse return;
         const plane = self.plane orelse return;
         var bg_palindex: c_uint = 0;
         _ = plane.set_fg_palindex(0);
@@ -333,7 +338,6 @@ const Solver = struct {
                 _ = plane.putchar_yx(coord[0], coord[1], pip);
             }
         }
-        // Draw errMsg
         _ = plane.putstr_yx(10, 10, self.last_failure.ptr);
     }
 };
@@ -346,6 +350,12 @@ pub fn main(init: std.process.Init) !void {
 
     var fh = try std.Io.Dir.cwd().openFile(init.io, args.next().?, .{});
     defer fh.close(init.io);
+
+    var enable_tui = true;
+    if (args.next()) |arg| {
+        enable_tui = !std.mem.eql(u8, arg, "--batch");
+    }
+
     var buf: [1024]u8 = undefined;
     var freader = fh.reader(init.io, &buf);
     var jallocator = std.heap.ArenaAllocator.init(allocator);
@@ -361,33 +371,31 @@ pub fn main(init: std.process.Init) !void {
     try puzzle.init(allocator);
     defer puzzle.deinit(allocator);
 
-    //try puzzle.place(0, Coordinate{ 0, 0 }, Orientation.right);
+    var nc: ?*c.notcurses = null;
+    var stdplane: ?*c.ncplane = null;
+    if (enable_tui) {
+        nc = c.notcurses_init(null, null) orelse return error.UnexpectedError;
 
-    var nc = c.notcurses_init(null, null) orelse return error.UnexpectedError;
+        stdplane = nc.?.notcurses_stdplane() orelse return error.UnexpectedError;
+    }
 
-    const stdplane = nc.notcurses_stdplane() orelse return error.UnexpectedError;
-
-    var solver = Solver{
-        .puzzle = &puzzle,
-        .plane = stdplane,
-        .nc = nc,
-        .io = init.io,
-    };
+    var solver = Solver.init(&puzzle, stdplane, nc, init.io);
     _ = try solver.solve(allocator, 0);
-    solver.draw();
-    const legendOpts = c.ncplane_options{
-        .y = 0,
-        .x = 8,
-        .rows = 16,
-        .cols = 16,
-        .userptr = null,
-        .name = "legend",
-        .resizecb = null,
-        .flags = 0,
-    };
-    const legendPlane = stdplane.create(&legendOpts).?;
-    solver.drawLegend(legendPlane);
-    _ = c.notcurses_render(nc);
-    _ = nc.stop();
+    //solver.draw();
+    // const legendOpts = c.ncplane_options{
+    //     .y = 0,
+    //     .x = 8,
+    //     .rows = 16,
+    //     .cols = 16,
+    //     .userptr = null,
+    //     .name = "legend",
+    //     .resizecb = null,
+    //     .flags = 0,
+    // };
+    // const legendPlane = stdplane.create(&legendOpts).?;
+    // solver.drawLegend(legendPlane);
+    if (enable_tui) {
+        _ = nc.?.stop();
+    }
     std.debug.print("waits={}", .{solver.stats.waits});
 }
