@@ -113,6 +113,12 @@ const Puzzle = struct {
 const MAX_DOMINOES = 32;
 const MAX_INDICES = 16;
 
+const SolutionStatus = enum {
+    InvalidBranch,
+    NotSolved,
+    Solved,
+};
+
 const Solver = struct {
     puzzle: *Puzzle,
     plane: ?*c.ncplane,
@@ -126,9 +132,7 @@ const Solver = struct {
     indices: [MAX_INDICES]Coordinate,
     pipCache: [MAX_INDICES]u8 = undefined,
 
-    const Stats = struct {
-        waits: usize = 0,
-    };
+    const Stats = struct {};
 
     pub fn init(puzzle: *Puzzle, plane: ?*c.ncplane, nc: ?*c.notcurses, io: std.Io) Solver {
         var indices: [MAX_INDICES]Coordinate = undefined;
@@ -164,61 +168,63 @@ const Solver = struct {
         };
     }
 
-    pub fn solve(self: *Solver, gpa: std.mem.Allocator, index: usize) !bool {
-        // TODO move this out of recursion
-        var coords = std.ArrayList(Coordinate).empty;
-        defer coords.deinit(gpa);
+    pub fn solve(self: *Solver, index: usize) !SolutionStatus {
         for (self.puzzle.regions) |region| {
-            for (region.indices) |i| {
-                try coords.append(gpa, i);
-            }
-        }
-
-        for (coords.items) |coord| {
-            inline for (std.meta.fields(Orientation)) |field| {
-                const orientation = @field(Orientation, field.name);
-                const dp = DominoPlace{
-                    .c = coord,
-                    .d = self.puzzle.dominoes[index],
-                    .o = orientation,
-                };
-                if (self.canPlace(dp)) {
-                    try self.puzzle.placedDominoes.append(gpa, dp);
-                    const validated = self.validate();
-                    if (self.nc) |_| {
-                        self.draw();
-                        _ = c.notcurses_render(self.nc);
-                        //_ = self.waitFor(&[_]u32{'e'});
-                    } else {
-                        // std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
-                        //     dp.d[0],
-                        //     dp.d[1],
-                        //     dp.c[0],
-                        //     dp.c[1],
-                        //     if (validated) "success" else "error: ",
-                        //     if (validated) "" else self.last_failure,
-                        // });
-                    }
-
-                    if (validated) {
+            for (region.indices) |coord| {
+                outer: for (std.enums.values(Orientation)) |orientation| {
+                    const dp = DominoPlace{
+                        .c = coord,
+                        .d = self.puzzle.dominoes[index],
+                        .o = orientation,
+                    };
+                    if (self.canPlace(dp)) {
+                        self.puzzle.placedDominoes.appendAssumeCapacity(dp);
+                        const validated = self.validate();
                         if (self.nc) |_| {
-                            _ = self.waitFor(&[_]u32{'e'});
+                            self.draw();
+                            _ = c.notcurses_render(self.nc);
+                            //_ = self.waitFor(&[_]u32{'e'});
+                        } else {
+                            std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
+                                dp.d[0],
+                                dp.d[1],
+                                dp.c[0],
+                                dp.c[1],
+                                switch (validated) {
+                                    .Solved => "finished",
+                                    .InvalidBranch => "invalid: ",
+                                    .NotSolved => "continuing",
+                                },
+                                if (validated == .InvalidBranch) self.last_failure else "",
+                            });
                         }
-                        return true;
+
+                        switch (validated) {
+                            .InvalidBranch => {
+                                _ = self.puzzle.placedDominoes.pop();
+                                continue :outer;
+                            },
+                            .NotSolved => {
+                                switch (try self.solve(index + 1)) {
+                                    .Solved => return .Solved,
+                                    .InvalidBranch, .NotSolved => {
+                                        _ = self.puzzle.placedDominoes.pop();
+                                        continue :outer;
+                                    },
+                                }
+                            },
+                            .Solved => {
+                                if (self.nc) |_| {
+                                    _ = self.waitFor(&[_]u32{'e'});
+                                }
+                                return .Solved;
+                            },
+                        }
                     }
-
-                    if (index == self.puzzle.dominoes.len - 1) {
-                        _ = self.puzzle.placedDominoes.pop();
-                        return false;
-                    }
-
-                    if (try self.solve(gpa, index + 1)) return true;
-
-                    _ = self.puzzle.placedDominoes.pop();
                 }
             }
         }
-        return false;
+        return .InvalidBranch;
     }
 
     pub fn waitFor(self: *Solver, allowed: []const u32) u32 {
@@ -227,7 +233,6 @@ const Solver = struct {
             _ = c.notcurses_get_blocking(self.nc, &ninput);
             if (std.mem.findScalar(u32, allowed, ninput.id)) |_| {
                 if (ninput.evtype != c.NCTYPE_PRESS) continue;
-                self.stats.waits += 1;
                 return ninput.id;
             }
         }
@@ -255,51 +260,7 @@ const Solver = struct {
         return true;
     }
 
-    pub fn validate(self: *Solver) bool {
-        // Check invariants first
-        // for (self.puzzle.regions) |region| {
-        //     switch (region.type) {
-        //         .empty, .greater => {},
-        //         .sum => {
-        //             const s = self.puzzle.sumRegion(&region);
-        //             if (s > region.target) {
-        //                 self.errMsg("target ={d} fails, found {d}", .{ region.target, s });
-        //                 return false;
-        //             }
-        //         },
-        //         .less => {
-        //             const s = self.puzzle.sumRegion(&region);
-        //             if (s > region.target) {
-        //                 self.errMsg("target <{d} fails, found {d}", .{ region.target, s });
-        //                 return false;
-        //             }
-        //         },
-        //         .equals => {
-        //             var firstFoundPip: u8 = UnsetPip;
-        //             for (region.indices) |i| {
-        //                 const d = self.puzzle.pipAt(i) orelse continue;
-        //                 if (firstFoundPip == UnsetPip) {
-        //                     firstFoundPip = d;
-        //                 } else if (d != firstFoundPip) {
-        //                     self.errMsg("target = fails, found {d} then {d}", .{ firstFoundPip, d });
-        //                     return false;
-        //                 }
-        //             }
-        //         },
-        //         .notEquals => {
-        //             var found: [7]bool = [_]bool{false} ** 7;
-        //             for (region.indices) |coord| {
-        //                 const value = self.puzzle.pipAt(coord) orelse continue;
-        //                 if (found[@intCast(value)]) {
-        //                     self.errMsg("target != fails, already found {d}\n", .{value});
-        //                     return false;
-        //                 } else {
-        //                     found[@intCast(value)] = true;
-        //                 }
-        //             }
-        //         },
-        //     }
-        // }
+    pub fn validate(self: *Solver) SolutionStatus {
         if (self.puzzle.placedDominoes.items.len == self.puzzle.dominoes.len) {
             for (self.puzzle.regions) |region| {
                 switch (region.type) {
@@ -307,7 +268,7 @@ const Solver = struct {
                         for (region.indices) |coord| {
                             if (self.puzzle.pipAt(coord)) |_| {} else {
                                 self.errMsg("empty pip not filled", .{});
-                                return false;
+                                return .InvalidBranch;
                             }
                         }
                     },
@@ -315,21 +276,21 @@ const Solver = struct {
                         const s = self.puzzle.sumRegion(&region);
                         if (s <= region.target) {
                             self.errMsg("target >{d} fails, found {d}", .{ region.target, s });
-                            return false;
+                            return .InvalidBranch;
                         }
                     },
                     .sum => {
                         const s = self.puzzle.sumRegion(&region);
                         if (s != region.target) {
                             self.errMsg("target ={d} fails, found {d}", .{ region.target, s });
-                            return false;
+                            return .InvalidBranch;
                         }
                     },
                     .less => {
                         const s = self.puzzle.sumRegion(&region);
                         if (s >= region.target) {
                             self.errMsg("target <{d} fails, found {d}", .{ region.target, s });
-                            return false;
+                            return .InvalidBranch;
                         }
                     },
                     .equals => {
@@ -340,7 +301,7 @@ const Solver = struct {
                                 firstFoundPip = d;
                             } else if (d != firstFoundPip) {
                                 self.errMsg("target = fails, found {d} then {d}", .{ firstFoundPip, d });
-                                return false;
+                                return .InvalidBranch;
                             }
                         }
                     },
@@ -350,7 +311,7 @@ const Solver = struct {
                             const value = self.puzzle.pipAt(coord) orelse continue;
                             if (found[@intCast(value)]) {
                                 self.errMsg("target != fails, already found {d}\n", .{value});
-                                return false;
+                                return .InvalidBranch;
                             } else {
                                 found[@intCast(value)] = true;
                             }
@@ -358,10 +319,54 @@ const Solver = struct {
                     },
                 }
             }
-            return true;
+            return .Solved;
         } else {
+            // Check invariants
+            for (self.puzzle.regions) |region| {
+                switch (region.type) {
+                    .empty, .greater => {},
+                    .sum => {
+                        const s = self.puzzle.sumRegion(&region);
+                        if (s > region.target) {
+                            self.errMsg("target ={d} fails early, found {d}", .{ region.target, s });
+                            return .InvalidBranch;
+                        }
+                    },
+                    .less => {
+                        const s = self.puzzle.sumRegion(&region);
+                        if (s > region.target) {
+                            self.errMsg("target <{d} fails early, found {d}", .{ region.target, s });
+                            return .InvalidBranch;
+                        }
+                    },
+                    .equals => {
+                        var firstFoundPip: u8 = UnsetPip;
+                        for (region.indices) |i| {
+                            const d = self.puzzle.pipAt(i) orelse continue;
+                            if (firstFoundPip == UnsetPip) {
+                                firstFoundPip = d;
+                            } else if (d != firstFoundPip) {
+                                self.errMsg("target = fails early, found {d} then {d}", .{ firstFoundPip, d });
+                                return .InvalidBranch;
+                            }
+                        }
+                    },
+                    .notEquals => {
+                        var found: [7]bool = [_]bool{false} ** 7;
+                        for (region.indices) |coord| {
+                            const value = self.puzzle.pipAt(coord) orelse continue;
+                            if (found[@intCast(value)]) {
+                                self.errMsg("target != fails early, already found {d}\n", .{value});
+                                return .InvalidBranch;
+                            } else {
+                                found[@intCast(value)] = true;
+                            }
+                        }
+                    },
+                }
+            }
             self.errMsg("valid but not full", .{});
-            return false;
+            return .NotSolved;
         }
     }
 
@@ -462,7 +467,11 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var solver = Solver.init(&puzzle, stdplane, nc, init.io);
-    _ = try solver.solve(allocator, 0);
+    switch (try solver.solve(0)) {
+        .InvalidBranch => std.debug.print("invalid\n", .{}),
+        .Solved => std.debug.print("solved\n", .{}),
+        .NotSolved => std.debug.print("not solved\n", .{}),
+    }
     //solver.draw();
     // const legendOpts = c.ncplane_options{
     //     .y = 0,
@@ -479,5 +488,4 @@ pub fn main(init: std.process.Init) !void {
     if (enable_tui) {
         _ = nc.?.stop();
     }
-    std.debug.print("waits={}", .{solver.stats.waits});
 }
