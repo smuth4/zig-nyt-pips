@@ -26,6 +26,7 @@ const NYTFormat = struct {
     editor: []u8,
     easy: Puzzle,
     medium: Puzzle,
+    hard: Puzzle,
 };
 
 const DominoPlace = struct {
@@ -94,7 +95,7 @@ const Puzzle = struct {
     pub fn pipAt(self: *Puzzle, coord: Coordinate) ?u8 {
         for (self.placedDominoes.items) |p| {
             if (std.mem.eql(u8, &p.c, &coord)) return p.d[0];
-            if (std.mem.eql(u8, &p.c, &p.secondCoord())) return p.d[1];
+            if (std.mem.eql(u8, &coord, &p.secondCoord())) return p.d[1];
         }
         return null;
     }
@@ -115,6 +116,7 @@ const MAX_INDICES = 16;
 const Solver = struct {
     puzzle: *Puzzle,
     plane: ?*c.ncplane,
+    legendplane: ?*c.ncplane,
     nc: ?*c.notcurses, // If null, no UI
     io: std.Io,
     stats: Stats = .{},
@@ -137,6 +139,20 @@ const Solver = struct {
                 ic += 1;
             }
         }
+        var legendplane: ?*c.ncplane = null;
+        if (nc) |_| {
+            const legendOpts = c.ncplane_options{
+                .y = 0,
+                .x = 8,
+                .rows = 16,
+                .cols = 16,
+                .userptr = null,
+                .name = "legend",
+                .resizecb = null,
+                .flags = 0,
+            };
+            legendplane = plane.?.create(&legendOpts).?;
+        }
 
         return .{
             .puzzle = puzzle,
@@ -144,6 +160,7 @@ const Solver = struct {
             .nc = nc,
             .io = io,
             .indices = indices,
+            .legendplane = legendplane,
         };
     }
 
@@ -173,18 +190,20 @@ const Solver = struct {
                         _ = c.notcurses_render(self.nc);
                         //_ = self.waitFor(&[_]u32{'e'});
                     } else {
-                        std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
-                            dp.d[0],
-                            dp.d[1],
-                            dp.c[0],
-                            dp.c[1],
-                            if (validated) "success" else "error: ",
-                            self.last_failure,
-                        });
+                        // std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
+                        //     dp.d[0],
+                        //     dp.d[1],
+                        //     dp.c[0],
+                        //     dp.c[1],
+                        //     if (validated) "success" else "error: ",
+                        //     if (validated) "" else self.last_failure,
+                        // });
                     }
 
                     if (validated) {
-                        _ = self.waitFor(&[_]u32{'e'});
+                        if (self.nc) |_| {
+                            _ = self.waitFor(&[_]u32{'e'});
+                        }
                         return true;
                     }
 
@@ -238,51 +257,112 @@ const Solver = struct {
 
     pub fn validate(self: *Solver) bool {
         // Check invariants first
-        for (self.puzzle.regions) |region| {
-            switch (region.type) {
-                .empty, .greater => {},
-                .sum => {
-                    const s = self.puzzle.sumRegion(&region);
-                    if (s > region.target) {
-                        self.errMsg("target ={d} fails, found {d}", .{ region.target, s });
-                        return false;
-                    }
-                },
-                .less => {
-                    const s = self.puzzle.sumRegion(&region);
-                    if (s > region.target) {
-                        self.errMsg("target <{d} fails, found {d}", .{ region.target, s });
-                        return false;
-                    }
-                },
-                .equals => {
-                    var firstFoundPip: u8 = UnsetPip;
-                    for (region.indices) |i| {
-                        const d = self.puzzle.pipAt(i) orelse continue;
-                        if (firstFoundPip == UnsetPip) {
-                            firstFoundPip = d;
-                        } else if (d != firstFoundPip) {
-                            self.errMsg("target = fails, found {d} then {d}", .{ firstFoundPip, d });
+        // for (self.puzzle.regions) |region| {
+        //     switch (region.type) {
+        //         .empty, .greater => {},
+        //         .sum => {
+        //             const s = self.puzzle.sumRegion(&region);
+        //             if (s > region.target) {
+        //                 self.errMsg("target ={d} fails, found {d}", .{ region.target, s });
+        //                 return false;
+        //             }
+        //         },
+        //         .less => {
+        //             const s = self.puzzle.sumRegion(&region);
+        //             if (s > region.target) {
+        //                 self.errMsg("target <{d} fails, found {d}", .{ region.target, s });
+        //                 return false;
+        //             }
+        //         },
+        //         .equals => {
+        //             var firstFoundPip: u8 = UnsetPip;
+        //             for (region.indices) |i| {
+        //                 const d = self.puzzle.pipAt(i) orelse continue;
+        //                 if (firstFoundPip == UnsetPip) {
+        //                     firstFoundPip = d;
+        //                 } else if (d != firstFoundPip) {
+        //                     self.errMsg("target = fails, found {d} then {d}", .{ firstFoundPip, d });
+        //                     return false;
+        //                 }
+        //             }
+        //         },
+        //         .notEquals => {
+        //             var found: [7]bool = [_]bool{false} ** 7;
+        //             for (region.indices) |coord| {
+        //                 const value = self.puzzle.pipAt(coord) orelse continue;
+        //                 if (found[@intCast(value)]) {
+        //                     self.errMsg("target != fails, already found {d}\n", .{value});
+        //                     return false;
+        //                 } else {
+        //                     found[@intCast(value)] = true;
+        //                 }
+        //             }
+        //         },
+        //     }
+        // }
+        if (self.puzzle.placedDominoes.items.len == self.puzzle.dominoes.len) {
+            for (self.puzzle.regions) |region| {
+                switch (region.type) {
+                    .empty => {
+                        for (region.indices) |coord| {
+                            if (self.puzzle.pipAt(coord)) |_| {} else {
+                                self.errMsg("empty pip not filled", .{});
+                                return false;
+                            }
+                        }
+                    },
+                    .greater => {
+                        const s = self.puzzle.sumRegion(&region);
+                        if (s <= region.target) {
+                            self.errMsg("target >{d} fails, found {d}", .{ region.target, s });
                             return false;
                         }
-                    }
-                },
-                .notEquals => {
-                    var found: [7]bool = [_]bool{false} ** 7;
-                    for (region.indices) |coord| {
-                        const value = self.puzzle.pipAt(coord) orelse continue;
-                        if (found[@intCast(value)]) {
-                            self.errMsg("target != fails, already found {d}\n", .{value});
+                    },
+                    .sum => {
+                        const s = self.puzzle.sumRegion(&region);
+                        if (s != region.target) {
+                            self.errMsg("target ={d} fails, found {d}", .{ region.target, s });
                             return false;
-                        } else {
-                            found[@intCast(value)] = true;
                         }
-                    }
-                },
+                    },
+                    .less => {
+                        const s = self.puzzle.sumRegion(&region);
+                        if (s >= region.target) {
+                            self.errMsg("target <{d} fails, found {d}", .{ region.target, s });
+                            return false;
+                        }
+                    },
+                    .equals => {
+                        var firstFoundPip: u8 = UnsetPip;
+                        for (region.indices) |i| {
+                            const d = self.puzzle.pipAt(i) orelse continue;
+                            if (firstFoundPip == UnsetPip) {
+                                firstFoundPip = d;
+                            } else if (d != firstFoundPip) {
+                                self.errMsg("target = fails, found {d} then {d}", .{ firstFoundPip, d });
+                                return false;
+                            }
+                        }
+                    },
+                    .notEquals => {
+                        var found: [7]bool = [_]bool{false} ** 7;
+                        for (region.indices) |coord| {
+                            const value = self.puzzle.pipAt(coord) orelse continue;
+                            if (found[@intCast(value)]) {
+                                self.errMsg("target != fails, already found {d}\n", .{value});
+                                return false;
+                            } else {
+                                found[@intCast(value)] = true;
+                            }
+                        }
+                    },
+                }
             }
+            return true;
+        } else {
+            self.errMsg("valid but not full", .{});
+            return false;
         }
-        self.errMsg("valid but not full", .{});
-        return false;
     }
 
     pub fn drawLegend(self: *const Solver, plane: *c.ncplane) void {
@@ -312,10 +392,12 @@ const Solver = struct {
     }
 
     pub fn draw(self: *const Solver) void {
-        _ = self.nc orelse return;
+        _ = self.nc orelse return; // noop on batch
+
         const plane = self.plane orelse return;
         var bg_palindex: c_uint = 0;
         _ = plane.set_fg_palindex(0);
+        self.drawLegend(self.legendplane.?);
         for (self.puzzle.regions) |region| {
             if (region.type == .empty) {
                 _ = plane.set_bg_palindex(15);
@@ -367,7 +449,7 @@ pub fn main(init: std.process.Init) !void {
     });
     defer parsed.deinit();
 
-    var puzzle = parsed.value.easy;
+    var puzzle = parsed.value.hard;
     try puzzle.init(allocator);
     defer puzzle.deinit(allocator);
 
