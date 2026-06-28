@@ -95,7 +95,6 @@ const Solver = struct {
     stats: Stats = .{},
     last_failure: []const u8 = "",
     last_failure_buf: [128]u8 = undefined,
-    placedDominoes: [MAX_DOMINOES]DominoPlace = undefined,
     locations: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
     fast: bool = true,
 
