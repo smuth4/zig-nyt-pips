@@ -13,7 +13,9 @@ const Orientation = enum { right, up, left, down };
 
 const RegionType = enum { sum, equals, notEquals, greater, less, empty };
 
-const UnsetPip: u8 = 7; // Need a constant that's not 0-6 but also unsigned
+// Need some constants that's are 0-6 but also u8
+const UnsetPip: u8 = 7;
+const InvalidLocation: u8 = 8;
 
 const Region = struct {
     indices: []Coordinate,
@@ -30,29 +32,29 @@ const NYTFormat = struct {
 };
 
 const DominoPlace = struct {
-    d: Domino,
-    c: Coordinate,
-    o: Orientation,
+    domino: Domino,
+    coord: Coordinate,
+    orientation: Orientation,
 
     fn secondCoord(self: DominoPlace) Coordinate {
-        return switch (self.o) {
-            .right => .{ self.c[0], self.c[1] + 1 },
-            .left => .{ self.c[0], self.c[1] - 1 },
-            .down => .{ self.c[0] + 1, self.c[1] },
-            .up => .{ self.c[0] - 1, self.c[1] },
+        return switch (self.orientation) {
+            .right => .{ self.coord[0], self.coord[1] + 1 },
+            .left => .{ self.coord[0], self.coord[1] - 1 },
+            .down => .{ self.coord[0] + 1, self.coord[1] },
+            .up => .{ self.coord[0] - 1, self.coord[1] },
         };
     }
 
     fn isValid(self: DominoPlace) bool {
-        switch (self.o) {
+        switch (self.orientation) {
             .right, .down => return true,
-            .left => return self.c[1] != 0,
-            .up => return self.c[0] != 0,
+            .left => return self.coord[1] != 0,
+            .up => return self.coord[0] != 0,
         }
     }
 
     fn coords(self: DominoPlace) [2]Coordinate {
-        return [2]Coordinate{ self.d, self.secondCoord() };
+        return [2]Coordinate{ self.domino, self.secondCoord() };
     }
 };
 
@@ -87,15 +89,15 @@ const Puzzle = struct {
 
     pub fn dominoAt(self: *Puzzle, coord: Coordinate) ?DominoPlace {
         for (self.placedDominoes.items) |p| {
-            if (std.mem.eql(u8, &p.c, &coord)) return p.d;
+            if (std.mem.eql(u8, &p.coord, &coord)) return p.domino;
         }
         return null;
     }
 
     pub fn pipAt(self: *Puzzle, coord: Coordinate) ?u8 {
         for (self.placedDominoes.items) |p| {
-            if (std.mem.eql(u8, &p.c, &coord)) return p.d[0];
-            if (std.mem.eql(u8, &coord, &p.secondCoord())) return p.d[1];
+            if (std.mem.eql(u8, &p.coord, &coord)) return p.domino[0];
+            if (std.mem.eql(u8, &coord, &p.secondCoord())) return p.domino[1];
         }
         return null;
     }
@@ -112,6 +114,8 @@ const Puzzle = struct {
 // Can be bumped later
 const MAX_DOMINOES = 32;
 const MAX_INDICES = 16;
+const MAX_X = 30;
+const MAX_Y = 30;
 
 const SolutionStatus = enum {
     InvalidBranch,
@@ -173,11 +177,12 @@ const Solver = struct {
             for (region.indices) |coord| {
                 outer: for (std.enums.values(Orientation)) |orientation| {
                     const dp = DominoPlace{
-                        .c = coord,
-                        .d = self.puzzle.dominoes[index],
-                        .o = orientation,
+                        .coord = coord,
+                        .domino = self.puzzle.dominoes[index],
+                        .orientation = orientation,
                     };
                     if (self.canPlace(dp)) {
+                        self.placedDominoes[index] = dp;
                         self.puzzle.placedDominoes.appendAssumeCapacity(dp);
                         const validated = self.validate();
                         if (self.nc) |_| {
@@ -245,14 +250,14 @@ const Solver = struct {
     fn canPlace(self: *Solver, dp: DominoPlace) bool {
         if (!dp.isValid()) return false;
         for (self.puzzle.placedDominoes.items) |d| {
-            if (coordEql(d.c, dp.c) or coordEql(d.secondCoord(), dp.c) or coordEql(d.c, dp.secondCoord()) or coordEql(d.secondCoord(), dp.secondCoord())) return false;
+            if (coordEql(d.coord, dp.coord) or coordEql(d.secondCoord(), dp.coord) or coordEql(d.coord, dp.secondCoord()) or coordEql(d.secondCoord(), dp.secondCoord())) return false;
         }
         // maybe just check secondCoord
         var matchedFirst = false;
         var matchedSecond = false;
         for (self.puzzle.regions) |region| {
             for (region.indices) |i| {
-                if (coordEql(i, dp.c)) matchedFirst = true;
+                if (coordEql(i, dp.coord)) matchedFirst = true;
                 if (coordEql(i, dp.secondCoord())) matchedSecond = true;
             }
         }
@@ -413,12 +418,12 @@ const Solver = struct {
             for (region.indices) |coord| {
                 var pip: u8 = ' ';
                 for (self.puzzle.placedDominoes.items) |p| {
-                    if (std.mem.eql(u8, &p.c, &coord)) {
-                        pip = p.d[0] + '0';
+                    if (std.mem.eql(u8, &p.coord, &coord)) {
+                        pip = p.domino[0] + '0';
                         break;
                     }
                     if (std.mem.eql(u8, &p.secondCoord(), &coord)) {
-                        pip = p.d[1] + '0';
+                        pip = p.domino[1] + '0';
                         break;
                     }
                 }
