@@ -411,29 +411,41 @@ const Solver = struct {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
-    var args = init.minimal.args.iterate();
-    _ = args.next();
-
-    var fh = try std.Io.Dir.cwd().openFile(init.io, args.next().?, .{});
-    defer fh.close(init.io);
+    var files = std.ArrayList([:0]const u8).empty;
+    defer files.deinit(allocator);
 
     var enable_tui = true;
-    if (args.next()) |arg| {
-        enable_tui = !std.mem.eql(u8, arg, "--batch");
+    // easy, medium, hard
+    var solve: [3]bool = .{false} ** 3;
+
+    var args = init.minimal.args.iterate();
+    _ = args.next(); // Skip $0
+    while (args.next()) |arg| {
+        if (arg[0] == '-' and arg[1] == '-') {
+            if (std.mem.eql(u8, arg, "--batch")) {
+                enable_tui = false;
+            } else if (std.mem.eql(u8, arg, "--easy")) {
+                solve[0] = true;
+            } else if (std.mem.eql(u8, arg, "--medium")) {
+                solve[1] = true;
+            } else if (std.mem.eql(u8, arg, "--hard")) {
+                solve[2] = true;
+            } else if (std.mem.eql(u8, arg, "--all")) {
+                solve = .{true} ** 3;
+            }
+        } else {
+            try files.append(allocator, arg);
+        }
+    }
+
+    // Solve all when no flags
+    if (!solve[0] and !solve[1] and !solve[2]) {
+        solve = .{true} ** 3;
     }
 
     var buf: [1024]u8 = undefined;
-    var freader = fh.reader(init.io, &buf);
     var jallocator = std.heap.ArenaAllocator.init(allocator);
-    var scanner = std.json.Scanner.Reader.init(jallocator.allocator(), &freader.interface);
     defer jallocator.deinit();
-
-    var parsed = try std.json.parseFromTokenSource(NYTFormat, allocator, &scanner, .{
-        .ignore_unknown_fields = true, // Safeguard against unexpected API fields
-    });
-    defer parsed.deinit();
-
-    var puzzle = parsed.value.medium;
 
     var nc: ?*c.notcurses = null;
     var stdplane: ?*c.ncplane = null;
@@ -443,25 +455,49 @@ pub fn main(init: std.process.Init) !void {
         stdplane = nc.?.notcurses_stdplane() orelse return error.UnexpectedError;
     }
 
-    var solver = Solver.init(&puzzle, stdplane, nc, init.io);
-    switch (try solver.solve(0)) {
-        .InvalidBranch => std.debug.print("invalid\n", .{}),
-        .Solved => std.debug.print("solved\n", .{}),
-        .NotSolved => std.debug.print("not solved\n", .{}),
+    for (files.items) |file| {
+        var fh = try std.Io.Dir.cwd().openFile(init.io, file, .{});
+        defer fh.close(init.io);
+
+        var freader = fh.reader(init.io, &buf);
+        var scanner = std.json.Scanner.Reader.init(jallocator.allocator(), &freader.interface);
+        defer scanner.deinit();
+
+        var parsed = try std.json.parseFromTokenSource(NYTFormat, allocator, &scanner, .{
+            .ignore_unknown_fields = true, // Safeguard against unexpected API fields
+        });
+        defer parsed.deinit();
+
+        for (solve, 0..) |s, i| {
+            if (!s) continue;
+            var puzzle = switch (i) {
+                0 => parsed.value.easy,
+                1 => parsed.value.medium,
+                2 => parsed.value.hard,
+                else => parsed.value.easy,
+            };
+
+            var solver = Solver.init(&puzzle, stdplane, nc, init.io);
+            const start = std.Io.Clock.real.now(init.io);
+            const solution = try solver.solve(0);
+            // Capture end time
+            const end = std.Io.Clock.real.now(init.io);
+
+            // Calculate duration
+            const duration = start.durationTo(end);
+            std.debug.print("{s}: {s} puzzle {s} in {d}ms\n", .{
+                std.fs.path.basename(file),
+                switch (i) {
+                    0 => "easy",
+                    1 => "medium",
+                    2 => "hard",
+                    else => "other",
+                },
+                @tagName(solution),
+                duration.toMilliseconds(),
+            });
+        }
     }
-    //solver.draw();
-    // const legendOpts = c.ncplane_options{
-    //     .y = 0,
-    //     .x = 8,
-    //     .rows = 16,
-    //     .cols = 16,
-    //     .userptr = null,
-    //     .name = "legend",
-    //     .resizecb = null,
-    //     .flags = 0,
-    // };
-    // const legendPlane = stdplane.create(&legendOpts).?;
-    // solver.drawLegend(legendPlane);
     if (enable_tui) {
         _ = nc.?.stop();
     }
