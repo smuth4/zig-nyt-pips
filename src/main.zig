@@ -7,13 +7,16 @@ const c = @cImport({
 });
 
 const Coordinate = [2]u8;
+pub fn coordToLoc(coord: Coordinate) u8 {
+    return coord[0] + (coord[1] * MAX_X);
+}
 const Domino = [2]u8;
 
 const Orientation = enum { right, up, left, down };
 
 const RegionType = enum { sum, equals, notEquals, greater, less, empty };
 
-// Need some constants that's are 0-6 but also u8
+// Need some constants that aren't 0-6 but still u8
 const UnsetPip: u8 = 7;
 const InvalidLocation: u8 = 8;
 
@@ -52,28 +55,11 @@ const DominoPlace = struct {
             .up => return self.coord[0] != 0,
         }
     }
-
-    fn coords(self: DominoPlace) [2]Coordinate {
-        return [2]Coordinate{ self.domino, self.secondCoord() };
-    }
 };
-
-fn coordEql(a: Coordinate, b: Coordinate) bool {
-    return a[0] == b[0] and a[1] == b[1];
-}
 
 const Puzzle = struct {
     regions: []Region,
     dominoes: []Domino,
-    placedDominoes: std.ArrayList(DominoPlace) = std.ArrayList(DominoPlace).empty,
-
-    pub fn init(self: *Puzzle, gpa: std.mem.Allocator) !void {
-        try self.placedDominoes.ensureTotalCapacity(gpa, self.dominoes.len);
-    }
-
-    pub fn deinit(self: *Puzzle, gpa: std.mem.Allocator) void {
-        self.placedDominoes.deinit(gpa);
-    }
 
     pub fn maxXY(self: *Puzzle) [2]usize {
         var maxX: usize = 0;
@@ -86,36 +72,13 @@ const Puzzle = struct {
         }
         return .{ maxX, maxY };
     }
-
-    pub fn dominoAt(self: *Puzzle, coord: Coordinate) ?DominoPlace {
-        for (self.placedDominoes.items) |p| {
-            if (std.mem.eql(u8, &p.coord, &coord)) return p.domino;
-        }
-        return null;
-    }
-
-    pub fn pipAt(self: *Puzzle, coord: Coordinate) ?u8 {
-        for (self.placedDominoes.items) |p| {
-            if (std.mem.eql(u8, &p.coord, &coord)) return p.domino[0];
-            if (std.mem.eql(u8, &coord, &p.secondCoord())) return p.domino[1];
-        }
-        return null;
-    }
-
-    pub fn sumRegion(self: *Puzzle, region: *const Region) i32 {
-        var sum: i32 = 0;
-        for (region.indices) |coord| {
-            sum += @intCast(self.pipAt(coord) orelse 0);
-        }
-        return sum;
-    }
 };
 
 // Can be bumped later
 const MAX_DOMINOES = 32;
 const MAX_INDICES = 16;
-const MAX_X = 30;
-const MAX_Y = 30;
+const MAX_X = 16;
+const MAX_Y = 16;
 
 const SolutionStatus = enum {
     InvalidBranch,
@@ -133,20 +96,12 @@ const Solver = struct {
     last_failure: []const u8 = "",
     last_failure_buf: [128]u8 = undefined,
     placedDominoes: [MAX_DOMINOES]DominoPlace = undefined,
-    indices: [MAX_INDICES]Coordinate,
-    pipCache: [MAX_INDICES]u8 = undefined,
+    locations: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
+    fast: bool = true,
 
     const Stats = struct {};
 
     pub fn init(puzzle: *Puzzle, plane: ?*c.ncplane, nc: ?*c.notcurses, io: std.Io) Solver {
-        var indices: [MAX_INDICES]Coordinate = undefined;
-        var ic: usize = 0;
-        for (puzzle.regions) |region| {
-            for (region.indices) |i| {
-                indices[ic] = i;
-                ic += 1;
-            }
-        }
         var legendplane: ?*c.ncplane = null;
         if (nc) |_| {
             const legendOpts = c.ncplane_options{
@@ -162,39 +117,65 @@ const Solver = struct {
             legendplane = plane.?.create(&legendOpts).?;
         }
 
-        return .{
+        var s = Solver{
             .puzzle = puzzle,
             .plane = plane,
             .nc = nc,
             .io = io,
-            .indices = indices,
             .legendplane = legendplane,
         };
+        for (puzzle.regions) |region| {
+            for (region.indices) |i| {
+                s.setLoc(i, UnsetPip);
+            }
+        }
+        return s;
+    }
+
+    pub fn setLoc(self: *Solver, coord: Coordinate, i: u8) void {
+        self.locations[coordToLoc(coord)] = i;
+    }
+
+    pub fn getLoc(self: *const Solver, coord: Coordinate) u8 {
+        return self.locations[coordToLoc(coord)];
+    }
+
+    // If possible to place, return true, else false
+    pub fn placeDomino(self: *Solver, dp: DominoPlace) bool {
+        if (!dp.isValid() or self.getLoc(dp.coord) != UnsetPip or self.getLoc(dp.secondCoord()) != UnsetPip) return false;
+
+        self.setLoc(dp.coord, dp.domino[0]);
+        self.setLoc(dp.secondCoord(), dp.domino[1]);
+        return true;
+    }
+
+    pub fn removeDomino(self: *Solver, dp: DominoPlace) void {
+        self.setLoc(dp.coord, UnsetPip);
+        self.setLoc(dp.secondCoord(), UnsetPip);
     }
 
     pub fn solve(self: *Solver, index: usize) !SolutionStatus {
+        const domino = self.puzzle.dominoes[index];
         for (self.puzzle.regions) |region| {
             for (region.indices) |coord| {
                 outer: for (std.enums.values(Orientation)) |orientation| {
                     const dp = DominoPlace{
                         .coord = coord,
-                        .domino = self.puzzle.dominoes[index],
+                        .domino = domino,
                         .orientation = orientation,
                     };
-                    if (self.canPlace(dp)) {
-                        self.placedDominoes[index] = dp;
-                        self.puzzle.placedDominoes.appendAssumeCapacity(dp);
-                        const validated = self.validate();
+                    if (self.placeDomino(dp)) {
+                        const validated = self.validate(index);
                         if (self.nc) |_| {
                             self.draw();
                             _ = c.notcurses_render(self.nc);
                             //_ = self.waitFor(&[_]u32{'e'});
-                        } else {
+                        } else if (!self.fast) {
                             std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
-                                dp.d[0],
-                                dp.d[1],
-                                dp.c[0],
-                                dp.c[1],
+                                dp.domino[0],
+                                dp.domino[1],
+                                dp.coord[0],
+                                dp.coord[1],
                                 switch (validated) {
                                     .Solved => "finished",
                                     .InvalidBranch => "invalid: ",
@@ -206,14 +187,14 @@ const Solver = struct {
 
                         switch (validated) {
                             .InvalidBranch => {
-                                _ = self.puzzle.placedDominoes.pop();
+                                self.removeDomino(dp);
                                 continue :outer;
                             },
                             .NotSolved => {
                                 switch (try self.solve(index + 1)) {
                                     .Solved => return .Solved,
                                     .InvalidBranch, .NotSolved => {
-                                        _ = self.puzzle.placedDominoes.pop();
+                                        self.removeDomino(dp);
                                         continue :outer;
                                     },
                                 }
@@ -232,6 +213,17 @@ const Solver = struct {
         return .InvalidBranch;
     }
 
+    pub fn sumRegion(self: *const Solver, region: *const Region) u8 {
+        var sum: u8 = 0;
+        for (region.indices) |coord| {
+            const value = self.getLoc(coord);
+            if (value <= 6) {
+                sum += value;
+            }
+        }
+        return sum;
+    }
+
     pub fn waitFor(self: *Solver, allowed: []const u32) u32 {
         var ninput: c.ncinput = undefined;
         while (true) {
@@ -244,55 +236,39 @@ const Solver = struct {
     }
 
     fn errMsg(self: *Solver, comptime fmt: []const u8, args: anytype) void {
-        self.last_failure = std.fmt.bufPrint(&self.last_failure_buf, fmt, args) catch "format error";
+        if (!self.fast) {
+            self.last_failure = std.fmt.bufPrint(&self.last_failure_buf, fmt, args) catch "format error";
+        }
     }
 
-    fn canPlace(self: *Solver, dp: DominoPlace) bool {
-        if (!dp.isValid()) return false;
-        for (self.puzzle.placedDominoes.items) |d| {
-            if (coordEql(d.coord, dp.coord) or coordEql(d.secondCoord(), dp.coord) or coordEql(d.coord, dp.secondCoord()) or coordEql(d.secondCoord(), dp.secondCoord())) return false;
-        }
-        // maybe just check secondCoord
-        var matchedFirst = false;
-        var matchedSecond = false;
-        for (self.puzzle.regions) |region| {
-            for (region.indices) |i| {
-                if (coordEql(i, dp.coord)) matchedFirst = true;
-                if (coordEql(i, dp.secondCoord())) matchedSecond = true;
-            }
-        }
-        if (!(matchedFirst and matchedSecond)) return false;
-        return true;
-    }
-
-    pub fn validate(self: *Solver) SolutionStatus {
-        if (self.puzzle.placedDominoes.items.len == self.puzzle.dominoes.len) {
+    pub fn validate(self: *Solver, index: usize) SolutionStatus {
+        if (index + 1 == self.puzzle.dominoes.len) {
             for (self.puzzle.regions) |region| {
                 switch (region.type) {
                     .empty => {
                         for (region.indices) |coord| {
-                            if (self.puzzle.pipAt(coord)) |_| {} else {
+                            if (self.getLoc(coord) == UnsetPip) {
                                 self.errMsg("empty pip not filled", .{});
                                 return .InvalidBranch;
                             }
                         }
                     },
                     .greater => {
-                        const s = self.puzzle.sumRegion(&region);
+                        const s = self.sumRegion(&region);
                         if (s <= region.target) {
                             self.errMsg("target >{d} fails, found {d}", .{ region.target, s });
                             return .InvalidBranch;
                         }
                     },
                     .sum => {
-                        const s = self.puzzle.sumRegion(&region);
+                        const s = self.sumRegion(&region);
                         if (s != region.target) {
                             self.errMsg("target ={d} fails, found {d}", .{ region.target, s });
                             return .InvalidBranch;
                         }
                     },
                     .less => {
-                        const s = self.puzzle.sumRegion(&region);
+                        const s = self.sumRegion(&region);
                         if (s >= region.target) {
                             self.errMsg("target <{d} fails, found {d}", .{ region.target, s });
                             return .InvalidBranch;
@@ -301,7 +277,8 @@ const Solver = struct {
                     .equals => {
                         var firstFoundPip: u8 = UnsetPip;
                         for (region.indices) |i| {
-                            const d = self.puzzle.pipAt(i) orelse continue;
+                            const d = self.getLoc(i);
+                            if (d == UnsetPip) continue;
                             if (firstFoundPip == UnsetPip) {
                                 firstFoundPip = d;
                             } else if (d != firstFoundPip) {
@@ -313,7 +290,8 @@ const Solver = struct {
                     .notEquals => {
                         var found: [7]bool = [_]bool{false} ** 7;
                         for (region.indices) |coord| {
-                            const value = self.puzzle.pipAt(coord) orelse continue;
+                            const value = self.getLoc(coord);
+                            if (value > 6) continue;
                             if (found[@intCast(value)]) {
                                 self.errMsg("target != fails, already found {d}\n", .{value});
                                 return .InvalidBranch;
@@ -331,14 +309,14 @@ const Solver = struct {
                 switch (region.type) {
                     .empty, .greater => {},
                     .sum => {
-                        const s = self.puzzle.sumRegion(&region);
+                        const s = self.sumRegion(&region);
                         if (s > region.target) {
                             self.errMsg("target ={d} fails early, found {d}", .{ region.target, s });
                             return .InvalidBranch;
                         }
                     },
                     .less => {
-                        const s = self.puzzle.sumRegion(&region);
+                        const s = self.sumRegion(&region);
                         if (s > region.target) {
                             self.errMsg("target <{d} fails early, found {d}", .{ region.target, s });
                             return .InvalidBranch;
@@ -347,7 +325,8 @@ const Solver = struct {
                     .equals => {
                         var firstFoundPip: u8 = UnsetPip;
                         for (region.indices) |i| {
-                            const d = self.puzzle.pipAt(i) orelse continue;
+                            const d = self.getLoc(i);
+                            if (d >= 6) continue;
                             if (firstFoundPip == UnsetPip) {
                                 firstFoundPip = d;
                             } else if (d != firstFoundPip) {
@@ -359,7 +338,8 @@ const Solver = struct {
                     .notEquals => {
                         var found: [7]bool = [_]bool{false} ** 7;
                         for (region.indices) |coord| {
-                            const value = self.puzzle.pipAt(coord) orelse continue;
+                            const value = self.getLoc(coord);
+                            if (value > 6) continue;
                             if (found[@intCast(value)]) {
                                 self.errMsg("target != fails early, already found {d}\n", .{value});
                                 return .InvalidBranch;
@@ -417,15 +397,9 @@ const Solver = struct {
             }
             for (region.indices) |coord| {
                 var pip: u8 = ' ';
-                for (self.puzzle.placedDominoes.items) |p| {
-                    if (std.mem.eql(u8, &p.coord, &coord)) {
-                        pip = p.domino[0] + '0';
-                        break;
-                    }
-                    if (std.mem.eql(u8, &p.secondCoord(), &coord)) {
-                        pip = p.domino[1] + '0';
-                        break;
-                    }
+                const value = self.getLoc(coord);
+                if (value <= 6) {
+                    pip = value + '0';
                 }
                 _ = plane.putchar_yx(coord[0], coord[1], pip);
             }
@@ -459,9 +433,7 @@ pub fn main(init: std.process.Init) !void {
     });
     defer parsed.deinit();
 
-    var puzzle = parsed.value.hard;
-    try puzzle.init(allocator);
-    defer puzzle.deinit(allocator);
+    var puzzle = parsed.value.medium;
 
     var nc: ?*c.notcurses = null;
     var stdplane: ?*c.ncplane = null;
