@@ -77,6 +77,7 @@ const Puzzle = struct {
 // Can be bumped later
 const MAX_DOMINOES = 32;
 const MAX_INDICES = 16;
+const MAX_REGIONS = 32;
 const MAX_X = 16;
 const MAX_Y = 16;
 
@@ -84,6 +85,12 @@ const SolutionStatus = enum {
     InvalidBranch,
     NotSolved,
     Solved,
+};
+
+const SolverRegion = struct {
+    indices: std.ArrayList(u8) = .empty, // Differs from JSON format here
+    type: RegionType,
+    target: u8 = 0,
 };
 
 const Solver = struct {
@@ -96,11 +103,12 @@ const Solver = struct {
     last_failure: []const u8 = "",
     last_failure_buf: [128]u8 = undefined,
     locations: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
+    regions: std.ArrayList(SolverRegion) = std.ArrayList(SolverRegion).empty,
     fast: bool = true,
 
     const Stats = struct {};
 
-    pub fn init(puzzle: *Puzzle, plane: ?*c.ncplane, nc: ?*c.notcurses, io: std.Io) Solver {
+    pub fn init(gpa: std.mem.Allocator, puzzle: *Puzzle, plane: ?*c.ncplane, nc: ?*c.notcurses, io: std.Io) error{OutOfMemory}!Solver {
         var legendplane: ?*c.ncplane = null;
         if (nc) |_| {
             const legendOpts = c.ncplane_options{
@@ -123,12 +131,27 @@ const Solver = struct {
             .io = io,
             .legendplane = legendplane,
         };
+        try s.regions.ensureTotalCapacity(gpa, puzzle.regions.len);
         for (puzzle.regions) |region| {
+            var sr = SolverRegion{
+                .type = region.type,
+                .target = region.target,
+            };
+            try sr.indices.ensureTotalCapacity(gpa, region.indices.len);
             for (region.indices) |i| {
                 s.setLoc(i, UnsetPip);
+                sr.indices.appendAssumeCapacity(coordToLoc(i));
             }
+            s.regions.appendAssumeCapacity(sr);
         }
         return s;
+    }
+
+    pub fn deinit(self: *Solver, gpa: std.mem.Allocator) void {
+        for (self.regions.items) |*r| {
+            r.indices.deinit(gpa);
+        }
+        self.regions.deinit(gpa);
     }
 
     pub fn setLoc(self: *Solver, coord: Coordinate, i: u8) void {
@@ -476,7 +499,9 @@ pub fn main(init: std.process.Init) !void {
                 else => parsed.value.easy,
             };
 
-            var solver = Solver.init(&puzzle, stdplane, nc, init.io);
+            var solver = try Solver.init(allocator, &puzzle, stdplane, nc, init.io);
+            defer solver.deinit(allocator);
+
             const start = std.Io.Clock.real.now(init.io);
             const solution = try solver.solve(0);
             // Capture end time
