@@ -10,6 +10,16 @@ const Coordinate = [2]u8;
 pub fn coordToLoc(coord: Coordinate) u8 {
     return coord[0] + (coord[1] * MAX_X);
 }
+pub fn locToCoord(location: u8) Coordinate {
+    return .{ location % MAX_X, location / MAX_X };
+}
+
+test "coord loc switch" {
+    const coord = Coordinate{ 3, 4 };
+    std.debug.assert(coord[0] == locToCoord(coordToLoc(coord))[0]);
+    std.debug.assert(coord[1] == locToCoord(coordToLoc(coord))[1]);
+}
+
 const Domino = [2]u8;
 
 const Orientation = enum { right, up, left, down };
@@ -139,7 +149,7 @@ const Solver = struct {
             };
             try sr.indices.ensureTotalCapacity(gpa, region.indices.len);
             for (region.indices) |i| {
-                s.setLoc(i, UnsetPip);
+                s.setCoord(i, UnsetPip);
                 sr.indices.appendAssumeCapacity(coordToLoc(i));
             }
             s.regions.appendAssumeCapacity(sr);
@@ -154,35 +164,35 @@ const Solver = struct {
         self.regions.deinit(gpa);
     }
 
-    pub fn setLoc(self: *Solver, coord: Coordinate, i: u8) void {
+    pub fn setCoord(self: *Solver, coord: Coordinate, i: u8) void {
         self.locations[coordToLoc(coord)] = i;
     }
 
-    pub fn getLoc(self: *const Solver, coord: Coordinate) u8 {
+    pub fn getCoord(self: *const Solver, coord: Coordinate) u8 {
         return self.locations[coordToLoc(coord)];
     }
 
     // If possible to place, return true, else false
     pub fn placeDomino(self: *Solver, dp: DominoPlace) bool {
-        if (!dp.isValid() or self.getLoc(dp.coord) != UnsetPip or self.getLoc(dp.secondCoord()) != UnsetPip) return false;
+        if (!dp.isValid() or self.getCoord(dp.coord) != UnsetPip or self.getCoord(dp.secondCoord()) != UnsetPip) return false;
 
-        self.setLoc(dp.coord, dp.domino[0]);
-        self.setLoc(dp.secondCoord(), dp.domino[1]);
+        self.setCoord(dp.coord, dp.domino[0]);
+        self.setCoord(dp.secondCoord(), dp.domino[1]);
         return true;
     }
 
     pub fn removeDomino(self: *Solver, dp: DominoPlace) void {
-        self.setLoc(dp.coord, UnsetPip);
-        self.setLoc(dp.secondCoord(), UnsetPip);
+        self.setCoord(dp.coord, UnsetPip);
+        self.setCoord(dp.secondCoord(), UnsetPip);
     }
 
     pub fn solve(self: *Solver, index: usize) !SolutionStatus {
         const domino = self.puzzle.dominoes[index];
-        for (self.puzzle.regions) |region| {
-            for (region.indices) |coord| {
+        for (self.regions.items) |region| {
+            for (region.indices.items) |location| {
                 outer: for (std.enums.values(Orientation)) |orientation| {
                     const dp = DominoPlace{
-                        .coord = coord,
+                        .coord = locToCoord(location),
                         .domino = domino,
                         .orientation = orientation,
                     };
@@ -238,7 +248,7 @@ const Solver = struct {
     pub fn sumRegion(self: *const Solver, region: *const Region) u8 {
         var sum: u8 = 0;
         for (region.indices) |coord| {
-            const value = self.getLoc(coord);
+            const value = self.getCoord(coord);
             if (value <= 6) {
                 sum += value;
             }
@@ -269,7 +279,7 @@ const Solver = struct {
                 switch (region.type) {
                     .empty => {
                         for (region.indices) |coord| {
-                            if (self.getLoc(coord) == UnsetPip) {
+                            if (self.getCoord(coord) == UnsetPip) {
                                 self.errMsg("empty pip not filled", .{});
                                 return .InvalidBranch;
                             }
@@ -299,7 +309,7 @@ const Solver = struct {
                     .equals => {
                         var firstFoundPip: u8 = UnsetPip;
                         for (region.indices) |i| {
-                            const d = self.getLoc(i);
+                            const d = self.getCoord(i);
                             if (d == UnsetPip) continue;
                             if (firstFoundPip == UnsetPip) {
                                 firstFoundPip = d;
@@ -312,7 +322,7 @@ const Solver = struct {
                     .notEquals => {
                         var found: [7]bool = [_]bool{false} ** 7;
                         for (region.indices) |coord| {
-                            const value = self.getLoc(coord);
+                            const value = self.getCoord(coord);
                             if (value > 6) continue;
                             if (found[@intCast(value)]) {
                                 self.errMsg("target != fails, already found {d}\n", .{value});
@@ -347,7 +357,7 @@ const Solver = struct {
                     .equals => {
                         var firstFoundPip: u8 = UnsetPip;
                         for (region.indices) |i| {
-                            const d = self.getLoc(i);
+                            const d = self.getCoord(i);
                             if (d >= 6) continue;
                             if (firstFoundPip == UnsetPip) {
                                 firstFoundPip = d;
@@ -360,7 +370,7 @@ const Solver = struct {
                     .notEquals => {
                         var found: [7]bool = [_]bool{false} ** 7;
                         for (region.indices) |coord| {
-                            const value = self.getLoc(coord);
+                            const value = self.getCoord(coord);
                             if (value > 6) continue;
                             if (found[@intCast(value)]) {
                                 self.errMsg("target != fails early, already found {d}\n", .{value});
@@ -419,7 +429,7 @@ const Solver = struct {
             }
             for (region.indices) |coord| {
                 var pip: u8 = ' ';
-                const value = self.getLoc(coord);
+                const value = self.getCoord(coord);
                 if (value <= 6) {
                     pip = value + '0';
                 }
