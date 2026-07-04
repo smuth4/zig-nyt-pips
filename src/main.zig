@@ -7,10 +7,12 @@ const c = @cImport({
 });
 
 const Coordinate = [2]u8;
-pub fn coordToLoc(coord: Coordinate) u8 {
+const Location = u8;
+
+pub fn coordToLoc(coord: Coordinate) Location {
     return coord[0] + (coord[1] * MAX_X);
 }
-pub fn locToCoord(location: u8) Coordinate {
+pub fn locToCoord(location: Location) Coordinate {
     return .{ location % MAX_X, location / MAX_X };
 }
 
@@ -30,6 +32,10 @@ const RegionType = enum { sum, equals, notEquals, greater, less, empty };
 const UnsetPip: u8 = 7;
 const InvalidLocation: u8 = 8;
 
+const SolverError = error{
+    InvalidDomino,
+};
+
 const Region = struct {
     indices: []Coordinate,
     type: RegionType,
@@ -42,29 +48,6 @@ const NYTFormat = struct {
     easy: Puzzle,
     medium: Puzzle,
     hard: Puzzle,
-};
-
-const DominoPlace = struct {
-    domino: Domino,
-    coord: Coordinate,
-    orientation: Orientation,
-
-    fn secondCoord(self: DominoPlace) Coordinate {
-        return switch (self.orientation) {
-            .right => .{ self.coord[0], self.coord[1] + 1 },
-            .left => .{ self.coord[0], self.coord[1] - 1 },
-            .down => .{ self.coord[0] + 1, self.coord[1] },
-            .up => .{ self.coord[0] - 1, self.coord[1] },
-        };
-    }
-
-    fn isValid(self: DominoPlace) bool {
-        switch (self.orientation) {
-            .right, .down => return true,
-            .left => return self.coord[1] != 0,
-            .up => return self.coord[0] != 0,
-        }
-    }
 };
 
 const Puzzle = struct {
@@ -149,7 +132,7 @@ const Solver = struct {
             };
             try sr.indices.ensureTotalCapacity(gpa, region.indices.len);
             for (region.indices) |i| {
-                s.setCoord(i, UnsetPip);
+                s.setLoc(coordToLoc(i), UnsetPip);
                 sr.indices.appendAssumeCapacity(coordToLoc(i));
             }
             s.regions.appendAssumeCapacity(sr);
@@ -164,26 +147,12 @@ const Solver = struct {
         self.regions.deinit(gpa);
     }
 
-    pub fn setCoord(self: *Solver, coord: Coordinate, i: u8) void {
-        self.locations[coordToLoc(coord)] = i;
+    pub fn getLoc(self: *const Solver, loc: Location) u8 {
+        return self.locations[loc];
     }
 
-    pub fn getCoord(self: *const Solver, coord: Coordinate) u8 {
-        return self.locations[coordToLoc(coord)];
-    }
-
-    // If possible to place, return true, else false
-    pub fn placeDomino(self: *Solver, dp: DominoPlace) bool {
-        if (!dp.isValid() or self.getCoord(dp.coord) != UnsetPip or self.getCoord(dp.secondCoord()) != UnsetPip) return false;
-
-        self.setCoord(dp.coord, dp.domino[0]);
-        self.setCoord(dp.secondCoord(), dp.domino[1]);
-        return true;
-    }
-
-    pub fn removeDomino(self: *Solver, dp: DominoPlace) void {
-        self.setCoord(dp.coord, UnsetPip);
-        self.setCoord(dp.secondCoord(), UnsetPip);
+    pub fn setLoc(self: *Solver, loc: Location, i: u8) void {
+        self.locations[loc] = i;
     }
 
     pub fn solve(self: *Solver, index: usize) !SolutionStatus {
@@ -191,53 +160,69 @@ const Solver = struct {
         for (self.regions.items) |region| {
             for (region.indices.items) |location| {
                 outer: for (std.enums.values(Orientation)) |orientation| {
-                    const dp = DominoPlace{
-                        .coord = locToCoord(location),
-                        .domino = domino,
-                        .orientation = orientation,
-                    };
-                    if (self.placeDomino(dp)) {
-                        const validated = self.validate(index);
-                        if (self.nc) |_| {
-                            self.draw();
-                            _ = c.notcurses_render(self.nc);
-                            //_ = self.waitFor(&[_]u32{'e'});
-                        } else if (!self.fast) {
-                            std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
-                                dp.domino[0],
-                                dp.domino[1],
-                                dp.coord[0],
-                                dp.coord[1],
-                                switch (validated) {
-                                    .Solved => "finished",
-                                    .InvalidBranch => "invalid: ",
-                                    .NotSolved => "continuing",
-                                },
-                                if (validated == .InvalidBranch) self.last_failure else "",
-                            });
-                        }
+                    var l2: Location = undefined;
+                    switch (orientation) {
+                        .right => {
+                            l2 = location + 1;
+                        },
+                        .left => {
+                            if (location % MAX_X == 0) continue :outer;
+                            l2 = location - 1;
+                        },
+                        .down => {
+                            l2 = location + MAX_X;
+                        },
+                        .up => {
+                            if (location / MAX_X == 0) continue :outer;
+                            l2 = location - MAX_X;
+                        },
+                    }
+                    if (self.getLoc(location) != UnsetPip or self.getLoc(l2) != UnsetPip) continue :outer;
+                    self.setLoc(location, domino[0]);
+                    self.setLoc(l2, domino[1]);
 
-                        switch (validated) {
-                            .InvalidBranch => {
-                                self.removeDomino(dp);
-                                continue :outer;
-                            },
-                            .NotSolved => {
-                                switch (try self.solve(index + 1)) {
-                                    .Solved => return .Solved,
-                                    .InvalidBranch, .NotSolved => {
-                                        self.removeDomino(dp);
-                                        continue :outer;
-                                    },
-                                }
-                            },
-                            .Solved => {
-                                if (self.nc) |_| {
-                                    _ = self.waitFor(&[_]u32{'e'});
-                                }
-                                return .Solved;
-                            },
-                        }
+                    const validated = self.validate(index);
+                    if (self.nc) |_| {
+                        self.draw();
+                        _ = c.notcurses_render(self.nc);
+                        //_ = self.waitFor(&[_]u32{'e'});
+                    } else if (!self.fast) {
+                        // std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
+                        //     dp.domino[0],
+                        //     dp.domino[1],
+                        //     dp.coord[0],
+                        //     dp.coord[1],
+                        //     switch (validated) {
+                        //         .Solved => "finished",
+                        //         .InvalidBranch => "invalid: ",
+                        //         .NotSolved => "continuing",
+                        //     },
+                        //     if (validated == .InvalidBranch) self.last_failure else "",
+                        // });
+                    }
+
+                    switch (validated) {
+                        .InvalidBranch => {
+                            self.setLoc(location, UnsetPip);
+                            self.setLoc(l2, UnsetPip);
+                            continue :outer;
+                        },
+                        .NotSolved => {
+                            switch (try self.solve(index + 1)) {
+                                .Solved => return .Solved,
+                                .InvalidBranch, .NotSolved => {
+                                    self.setLoc(location, UnsetPip);
+                                    self.setLoc(l2, UnsetPip);
+                                    continue :outer;
+                                },
+                            }
+                        },
+                        .Solved => {
+                            if (self.nc) |_| {
+                                _ = self.waitFor(&[_]u32{'e'});
+                            }
+                            return .Solved;
+                        },
                     }
                 }
             }
@@ -245,10 +230,10 @@ const Solver = struct {
         return .InvalidBranch;
     }
 
-    pub fn sumRegion(self: *const Solver, region: *const Region) u8 {
+    pub fn sumRegion(self: *const Solver, region: *const SolverRegion) u8 {
         var sum: u8 = 0;
-        for (region.indices) |coord| {
-            const value = self.getCoord(coord);
+        for (region.indices.items) |location| {
+            const value = self.getLoc(location);
             if (value <= 6) {
                 sum += value;
             }
@@ -275,11 +260,11 @@ const Solver = struct {
 
     pub fn validate(self: *Solver, index: usize) SolutionStatus {
         if (index + 1 == self.puzzle.dominoes.len) {
-            for (self.puzzle.regions) |region| {
+            for (self.regions.items) |region| {
                 switch (region.type) {
                     .empty => {
-                        for (region.indices) |coord| {
-                            if (self.getCoord(coord) == UnsetPip) {
+                        for (region.indices.items) |location| {
+                            if (self.getLoc(location) == UnsetPip) {
                                 self.errMsg("empty pip not filled", .{});
                                 return .InvalidBranch;
                             }
@@ -308,8 +293,8 @@ const Solver = struct {
                     },
                     .equals => {
                         var firstFoundPip: u8 = UnsetPip;
-                        for (region.indices) |i| {
-                            const d = self.getCoord(i);
+                        for (region.indices.items) |i| {
+                            const d = self.getLoc(i);
                             if (d == UnsetPip) continue;
                             if (firstFoundPip == UnsetPip) {
                                 firstFoundPip = d;
@@ -321,8 +306,8 @@ const Solver = struct {
                     },
                     .notEquals => {
                         var found: [7]bool = [_]bool{false} ** 7;
-                        for (region.indices) |coord| {
-                            const value = self.getCoord(coord);
+                        for (region.indices.items) |location| {
+                            const value = self.getLoc(location);
                             if (value > 6) continue;
                             if (found[@intCast(value)]) {
                                 self.errMsg("target != fails, already found {d}\n", .{value});
@@ -337,7 +322,7 @@ const Solver = struct {
             return .Solved;
         } else {
             // Check invariants
-            for (self.puzzle.regions) |region| {
+            for (self.regions.items) |region| {
                 switch (region.type) {
                     .empty, .greater => {},
                     .sum => {
@@ -356,8 +341,8 @@ const Solver = struct {
                     },
                     .equals => {
                         var firstFoundPip: u8 = UnsetPip;
-                        for (region.indices) |i| {
-                            const d = self.getCoord(i);
+                        for (region.indices.items) |i| {
+                            const d = self.getLoc(i);
                             if (d >= 6) continue;
                             if (firstFoundPip == UnsetPip) {
                                 firstFoundPip = d;
@@ -369,8 +354,8 @@ const Solver = struct {
                     },
                     .notEquals => {
                         var found: [7]bool = [_]bool{false} ** 7;
-                        for (region.indices) |coord| {
-                            const value = self.getCoord(coord);
+                        for (region.indices.items) |i| {
+                            const value = self.getLoc(i);
                             if (value > 6) continue;
                             if (found[@intCast(value)]) {
                                 self.errMsg("target != fails early, already found {d}\n", .{value});
@@ -403,9 +388,9 @@ const Solver = struct {
                 .empty => "",
                 .equals => "=",
                 .notEquals => "!=",
-                .sum => std.fmt.bufPrintZ(&buf, "={d}", .{region.target}) catch "=format error",
-                .greater => std.fmt.bufPrintZ(&buf, ">{d}", .{region.target}) catch ">format error",
-                .less => std.fmt.bufPrintZ(&buf, "<{d}", .{region.target}) catch "<format error",
+                .sum => std.fmt.bufPrintZ(&buf, "={d}", .{region.target}) catch "=fmt err",
+                .greater => std.fmt.bufPrintZ(&buf, ">{d}", .{region.target}) catch ">fmt err",
+                .less => std.fmt.bufPrintZ(&buf, "<{d}", .{region.target}) catch "<fmt err",
             };
             _ = plane.putstr_yx(y_index, 4, str.ptr);
         }
@@ -420,19 +405,20 @@ const Solver = struct {
         var bg_palindex: c_uint = 0;
         _ = plane.set_fg_palindex(0);
         self.drawLegend(self.legendplane.?);
-        for (self.puzzle.regions) |region| {
+        for (self.regions.items) |region| {
             if (region.type == .empty) {
                 _ = plane.set_bg_palindex(15);
             } else {
                 bg_palindex += 1;
                 _ = plane.set_bg_palindex(bg_palindex);
             }
-            for (region.indices) |coord| {
+            for (region.indices.items) |i| {
                 var pip: u8 = ' ';
-                const value = self.getCoord(coord);
+                const value = self.getLoc(i);
                 if (value <= 6) {
                     pip = value + '0';
                 }
+                const coord = locToCoord(i);
                 _ = plane.putchar_yx(coord[0], coord[1], pip);
             }
         }
