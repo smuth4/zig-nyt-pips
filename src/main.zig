@@ -1,11 +1,6 @@
 const std = @import("std");
 const zig_nyt_pips = @import("zig_nyt_pips");
 
-const c = @cImport({
-    @cDefine("_XOPEN_SOURCE", "700");
-    @cInclude("notcurses/notcurses.h");
-});
-
 const Coordinate = [2]u8;
 const Location = u8;
 
@@ -94,9 +89,6 @@ const SolverRegion = struct {
 
 const Solver = struct {
     puzzle: *Puzzle,
-    plane: ?*c.ncplane,
-    legendplane: ?*c.ncplane,
-    nc: ?*c.notcurses, // If null, no UI
     io: std.Io,
     stats: Stats = .{},
     last_failure: []const u8 = "",
@@ -107,28 +99,10 @@ const Solver = struct {
 
     const Stats = struct {};
 
-    pub fn init(gpa: std.mem.Allocator, puzzle: *Puzzle, plane: ?*c.ncplane, nc: ?*c.notcurses, io: std.Io) error{OutOfMemory}!Solver {
-        var legendplane: ?*c.ncplane = null;
-        if (nc) |_| {
-            const legendOpts = c.ncplane_options{
-                .y = 0,
-                .x = 8,
-                .rows = 16,
-                .cols = 16,
-                .userptr = null,
-                .name = "legend",
-                .resizecb = null,
-                .flags = 0,
-            };
-            legendplane = plane.?.create(&legendOpts).?;
-        }
-
+    pub fn init(gpa: std.mem.Allocator, puzzle: *Puzzle, io: std.Io) error{OutOfMemory}!Solver {
         var s = Solver{
             .puzzle = puzzle,
-            .plane = plane,
-            .nc = nc,
             .io = io,
-            .legendplane = legendplane,
         };
         try s.regions.ensureTotalCapacity(gpa, puzzle.regions.len);
         for (puzzle.regions) |region| {
@@ -263,6 +237,39 @@ const Solver = struct {
         }
     }
 
+    // Build N number of valid states as a copy of this fresh state
+    // pub fn generateFrontier(self: *Solver, gpa: std.mem.Allocator, num: usize) !std.ArrayList(Solver) {
+    //     var states = try std.ArrayList(Solver).initCapacity(gpa, num);
+    //     var depth: usize = 0;
+    //     var index: usize = 0;
+    //     for (self.regions.items) |*region| {
+    //         for (region.indices.items) |location| {
+    //             const domino = self.puzzle.dominoes[index];
+    //             outer: for (std.enums.values(Orientation)) |orientation| {
+    //                 if (num >= depth) return states;
+    //                 const l2: Location = switch (orientation) {
+    //                     .right => location + 1,
+    //                     .left => blk: {
+    //                         if (location % MAX_X == 0) continue :outer;
+    //                         break :blk location - 1;
+    //                     },
+    //                     .down => location + MAX_X,
+    //                     .up => blk: {
+    //                         if (location / MAX_X == 0) continue :outer;
+    //                         break :blk location - MAX_X;
+    //                     },
+    //                 };
+    //                 if (self.getLoc(location) != UnsetPip or self.getLoc(l2) != UnsetPip) continue :outer;
+    //                 if (!self.addToCache(domino, region, l2)) {
+    //                     continue :outer;
+    //                 }
+    //                 self.setLoc(location, domino[0]);
+    //                 self.setLoc(l2, domino[1]);
+    //             }
+    //         }
+    //     }
+    // }
+
     pub fn solve(self: *Solver, index: usize) !SolutionStatus {
         const domino = self.puzzle.dominoes[index];
         for (self.regions.items) |*region| {
@@ -288,11 +295,7 @@ const Solver = struct {
                     self.setLoc(l2, domino[1]);
 
                     const validated = self.validate(index);
-                    if (self.nc) |_| {
-                        self.draw();
-                        _ = c.notcurses_render(self.nc);
-                        //_ = self.waitFor(&[_]u32{'e'});
-                    } else if (!self.fast) {
+                    if (!self.fast) {
                         // std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
                         //     dp.domino[0],
                         //     dp.domino[1],
@@ -326,9 +329,6 @@ const Solver = struct {
                             }
                         },
                         .Solved => {
-                            if (self.nc) |_| {
-                                _ = self.waitFor(&[_]u32{'e'});
-                            }
                             return .Solved;
                         },
                     }
@@ -347,17 +347,6 @@ const Solver = struct {
             }
         }
         return sum;
-    }
-
-    pub fn waitFor(self: *Solver, allowed: []const u32) u32 {
-        var ninput: c.ncinput = undefined;
-        while (true) {
-            _ = c.notcurses_get_blocking(self.nc, &ninput);
-            if (std.mem.findScalar(u32, allowed, ninput.id)) |_| {
-                if (ninput.evtype != c.NCTYPE_PRESS) continue;
-                return ninput.id;
-            }
-        }
     }
 
     fn errMsg(self: *Solver, comptime fmt: []const u8, args: anytype) void {
@@ -437,59 +426,6 @@ const Solver = struct {
             return .NotSolved;
         }
     }
-
-    pub fn drawLegend(self: *const Solver, plane: *c.ncplane) void {
-        var bg_palindex: c_uint = 0;
-        _ = plane.set_fg_palindex(0);
-        for (self.puzzle.regions) |region| {
-            if (region.type == .empty) continue;
-            bg_palindex += 1;
-            const y_index: c_int = @as(c_int, @intCast(bg_palindex));
-            _ = plane.set_bg_palindex(bg_palindex);
-            _ = plane.putchar_yx(y_index, 2, ' ');
-            _ = plane.set_bg_default();
-            _ = plane.set_fg_default();
-            var buf: [4]u8 = undefined;
-            const str = switch (region.type) {
-                .empty => "",
-                .equals => "=",
-                .notEquals => "!=",
-                .sum => std.fmt.bufPrintZ(&buf, "={d}", .{region.target}) catch "=fmt err",
-                .greater => std.fmt.bufPrintZ(&buf, ">{d}", .{region.target}) catch ">fmt err",
-                .less => std.fmt.bufPrintZ(&buf, "<{d}", .{region.target}) catch "<fmt err",
-            };
-            _ = plane.putstr_yx(y_index, 4, str.ptr);
-        }
-        _ = plane.cursor_move_yx(0, 0);
-        _ = plane.rounded_box(0, 0, bg_palindex + 1, 10, 0);
-    }
-
-    pub fn draw(self: *const Solver) void {
-        _ = self.nc orelse return; // noop on batch
-
-        const plane = self.plane orelse return;
-        var bg_palindex: c_uint = 0;
-        _ = plane.set_fg_palindex(0);
-        self.drawLegend(self.legendplane.?);
-        for (self.regions.items) |region| {
-            if (region.type == .empty) {
-                _ = plane.set_bg_palindex(15);
-            } else {
-                bg_palindex += 1;
-                _ = plane.set_bg_palindex(bg_palindex);
-            }
-            for (region.indices.items) |i| {
-                var pip: u8 = ' ';
-                const value = self.getLoc(i);
-                if (value <= 6) {
-                    pip = value + '0';
-                }
-                const coord = locToCoord(i);
-                _ = plane.putchar_yx(coord[0], coord[1], pip);
-            }
-        }
-        _ = plane.putstr_yx(10, 10, self.last_failure.ptr);
-    }
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -498,7 +434,6 @@ pub fn main(init: std.process.Init) !void {
     var files = std.ArrayList([:0]const u8).empty;
     defer files.deinit(allocator);
 
-    var enable_tui = true;
     // easy, medium, hard
     var solve: [3]bool = .{false} ** 3;
 
@@ -507,7 +442,7 @@ pub fn main(init: std.process.Init) !void {
     while (args.next()) |arg| {
         if (arg[0] == '-' and arg[1] == '-') {
             if (std.mem.eql(u8, arg, "--batch")) {
-                enable_tui = false;
+                // noop, legacy flag
             } else if (std.mem.eql(u8, arg, "--easy")) {
                 solve[0] = true;
             } else if (std.mem.eql(u8, arg, "--medium")) {
@@ -531,14 +466,6 @@ pub fn main(init: std.process.Init) !void {
     var jallocator = std.heap.ArenaAllocator.init(allocator);
     defer jallocator.deinit();
 
-    var nc: ?*c.notcurses = null;
-    var stdplane: ?*c.ncplane = null;
-    if (enable_tui) {
-        nc = c.notcurses_init(null, null) orelse return error.UnexpectedError;
-
-        stdplane = nc.?.notcurses_stdplane() orelse return error.UnexpectedError;
-    }
-
     for (files.items) |file| {
         var fh = try std.Io.Dir.cwd().openFile(init.io, file, .{});
         defer fh.close(init.io);
@@ -561,7 +488,7 @@ pub fn main(init: std.process.Init) !void {
                 else => parsed.value.easy,
             };
 
-            var solver = try Solver.init(allocator, &puzzle, stdplane, nc, init.io);
+            var solver = try Solver.init(allocator, &puzzle, init.io);
             defer solver.deinit(allocator);
 
             const start = std.Io.Clock.real.now(init.io);
@@ -583,8 +510,5 @@ pub fn main(init: std.process.Init) !void {
                 duration.toMilliseconds(),
             });
         }
-    }
-    if (enable_tui) {
-        _ = nc.?.stop();
     }
 }
