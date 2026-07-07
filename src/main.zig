@@ -70,9 +70,10 @@ const MAX_X = 16;
 const MAX_Y = 16;
 
 const SolutionStatus = enum {
-    InvalidBranch,
-    NotSolved,
-    Solved,
+    InvalidBranch, // Stop working this branch
+    NotSolved, // Continue working this branch
+    Solved, // Completely solved
+    Halted, // Not yet solved but not invalid either
 };
 
 const SolverRegion = struct {
@@ -107,6 +108,11 @@ const SolverState = struct {
         self.index -= 1;
         return self.placed[self.index + 1];
     }
+};
+
+const SolverOptions = struct {
+    max_depth: ?usize = null,
+    depth_solutions: ?std.ArrayList(SolverState) = null,
 };
 
 const Solver = struct {
@@ -271,7 +277,7 @@ const Solver = struct {
         std.debug.print("\n", .{});
     }
 
-    pub fn solve(self: *Solver, state: *SolverState) !SolutionStatus {
+    pub fn solve(self: *Solver, state: *SolverState, options: *const SolverOptions) !SolutionStatus {
         const domino = self.puzzle.dominoes[state.index];
         for (self.regions.items, 0..) |*region, region_index| {
             for (region.indices.items) |l1| {
@@ -322,7 +328,7 @@ const Solver = struct {
                             continue :outer;
                         },
                         .NotSolved => {
-                            switch (try self.solve(state)) {
+                            switch (try self.solve(state, options)) {
                                 .Solved => return .Solved,
                                 .InvalidBranch, .NotSolved => {
                                     self.setLoc(l1, UnsetPip);
@@ -331,10 +337,16 @@ const Solver = struct {
                                     _ = state.pop();
                                     continue :outer;
                                 },
+                                .Halted => {
+                                    unreachable;
+                                },
                             }
                         },
                         .Solved => {
                             return .Solved;
+                        },
+                        .Halted => {
+                            unreachable;
                         },
                     }
                 }
@@ -498,7 +510,7 @@ pub fn main(init: std.process.Init) !void {
 
             const start = std.Io.Clock.real.now(init.io);
             var sol_state = SolverState{};
-            const solution = try solver.solve(&sol_state);
+            const solution = try solver.solve(&sol_state, &.{});
             // Capture end time
             const end = std.Io.Clock.real.now(init.io);
 
