@@ -121,7 +121,8 @@ const Solver = struct {
     stats: Stats = .{},
     last_failure: []const u8 = "",
     last_failure_buf: [128]u8 = undefined,
-    regions: std.ArrayList(SolverRegion) = std.ArrayList(SolverRegion).empty,
+    regions: [MAX_REGIONS]SolverRegion = undefined,
+    region_len: usize,
     fast: bool = true,
 
     const Stats = struct {};
@@ -130,9 +131,9 @@ const Solver = struct {
         var s = Solver{
             .puzzle = puzzle,
             .io = io,
+            .region_len = puzzle.regions.len,
         };
-        try s.regions.ensureTotalCapacity(gpa, puzzle.regions.len);
-        for (puzzle.regions) |region| {
+        for (puzzle.regions, 0..) |region, region_index| {
             var sr = SolverRegion{
                 .type = region.type,
                 .target = region.target,
@@ -141,14 +142,15 @@ const Solver = struct {
             for (region.indices) |i| {
                 sr.indices.appendAssumeCapacity(coordToLoc(i));
             }
-            s.regions.appendAssumeCapacity(sr);
+            s.regions[region_index] = sr;
         }
         return s;
     }
 
     pub fn newState(self: *const Solver) SolverState {
         var state = SolverState{};
-        for (self.regions.items) |region| {
+        for (0..self.region_len) |region_index| {
+            const region = self.regions[region_index];
             for (region.indices.items) |i| {
                 state.locations[i] = UnsetPip;
             }
@@ -157,14 +159,13 @@ const Solver = struct {
     }
 
     pub fn deinit(self: *Solver, gpa: std.mem.Allocator) void {
-        for (self.regions.items) |*r| {
-            r.indices.deinit(gpa);
+        for (0..self.region_len) |region_index| {
+            self.regions[region_index].indices.deinit(gpa);
         }
-        self.regions.deinit(gpa);
     }
 
     pub fn addToRegionCache(self: *const Solver, state: *SolverState, ri: usize, pip: u8) bool {
-        const r = self.regions.items[ri];
+        const r = self.regions[ri];
         switch (r.type) {
             .sum => {
                 if (state.region_cache[ri] + pip > r.target) return false;
@@ -209,7 +210,7 @@ const Solver = struct {
     }
 
     pub fn removeFromRegionCache(self: *const Solver, state: *SolverState, ri: usize, pip: u8) void {
-        const r = self.regions.items[ri];
+        const r = self.regions[ri];
         switch (r.type) {
             .sum, .less, .greater => {
                 state.region_cache[ri] -= pip;
@@ -238,8 +239,8 @@ const Solver = struct {
 
     // Bit of a funky signature, we know the region for l1 directly, but have to scan for l2
     pub fn addToCache(self: *const Solver, state: *SolverState, d: Domino, ri1: usize, l2: Location) bool {
-        for (self.regions.items, 0..) |*region, ri2| {
-            for (region.indices.items) |location| {
+        for (0..self.region_len) |ri2| {
+            for (self.regions[ri2].indices.items) |location| {
                 if (l2 == location) {
                     if (!self.addToRegionCache(state, ri1, d[0])) return false;
                     if (self.addToRegionCache(state, ri2, d[1])) {
@@ -257,7 +258,8 @@ const Solver = struct {
 
     // Assumes that the removal is legit, and doesn't check status
     pub fn removeFromCache(self: *const Solver, state: *SolverState, d: Domino, ri1: usize, l2: Location) void {
-        for (self.regions.items, 0..) |*region, ri2| {
+        for (0..self.region_len) |ri2| {
+            const region = self.regions[ri2];
             for (region.indices.items) |location| {
                 if (l2 == location) {
                     self.removeFromRegionCache(state, ri1, d[0]);
@@ -279,7 +281,8 @@ const Solver = struct {
 
     pub fn solve(self: *Solver, state: *SolverState, options: *const SolverOptions) !SolutionStatus {
         const domino = self.puzzle.dominoes[state.index];
-        for (self.regions.items, 0..) |*region, region_index| {
+        for (0..self.region_len) |region_index| {
+            const region = self.regions[region_index];
             for (region.indices.items) |l1| {
                 outer: for (std.enums.values(Orientation)) |orientation| {
                     const l2: Location = switch (orientation) {
@@ -363,7 +366,8 @@ const Solver = struct {
 
     pub fn validate(self: *Solver, state: *SolverState) SolutionStatus {
         if (state.index + 1 == self.puzzle.dominoes.len) {
-            for (self.regions.items, 0..) |region, region_index| {
+            for (0..self.region_len) |region_index| {
+                const region = self.regions[region_index];
                 switch (region.type) {
                     .empty => {
                         // If we're full, we can assume all pips are filled
@@ -395,7 +399,8 @@ const Solver = struct {
             return .Solved;
         } else {
             // Check invariants
-            for (self.regions.items) |region| {
+            for (0..self.region_len) |region_index| {
+                const region = self.regions[region_index];
                 switch (region.type) {
                     .empty, .greater => {},
                     .sum => {},
@@ -497,8 +502,11 @@ pub fn main(init: std.process.Init) !void {
             var solver = try Solver.init(allocator, &puzzle, init.io);
             defer solver.deinit(allocator);
 
-            const start = std.Io.Clock.real.now(init.io);
             var sol_state = solver.newState();
+            _ = try solver.solve(&sol_state, &.{});
+
+            const start = std.Io.Clock.real.now(init.io);
+            sol_state = solver.newState();
             const solution = try solver.solve(&sol_state, &.{});
             // Capture end time
             const end = std.Io.Clock.real.now(init.io);
