@@ -121,7 +121,6 @@ const Solver = struct {
     stats: Stats = .{},
     last_failure: []const u8 = "",
     last_failure_buf: [128]u8 = undefined,
-    locations: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
     regions: std.ArrayList(SolverRegion) = std.ArrayList(SolverRegion).empty,
     fast: bool = true,
 
@@ -140,7 +139,6 @@ const Solver = struct {
             };
             try sr.indices.ensureTotalCapacity(gpa, region.indices.len);
             for (region.indices) |i| {
-                s.setLoc(coordToLoc(i), UnsetPip);
                 sr.indices.appendAssumeCapacity(coordToLoc(i));
             }
             s.regions.appendAssumeCapacity(sr);
@@ -148,19 +146,21 @@ const Solver = struct {
         return s;
     }
 
+    pub fn newState(self: *const Solver) SolverState {
+        var state = SolverState{};
+        for (self.regions.items) |region| {
+            for (region.indices.items) |i| {
+                state.locations[i] = UnsetPip;
+            }
+        }
+        return state;
+    }
+
     pub fn deinit(self: *Solver, gpa: std.mem.Allocator) void {
         for (self.regions.items) |*r| {
             r.indices.deinit(gpa);
         }
         self.regions.deinit(gpa);
-    }
-
-    pub fn getLoc(self: *const Solver, loc: Location) u8 {
-        return self.locations[loc];
-    }
-
-    pub fn setLoc(self: *Solver, loc: Location, i: u8) void {
-        self.locations[loc] = i;
     }
 
     pub fn addToRegionCache(self: *const Solver, state: *SolverState, ri: usize, pip: u8) bool {
@@ -267,11 +267,11 @@ const Solver = struct {
         }
     }
 
-    pub fn printDominos(self: *const Solver) void {
+    pub fn printDominos(_: *const Solver, state: *SolverState) void {
         std.debug.print("s: ", .{});
-        for (0..self.locations.len) |i| {
-            if (self.locations[i] != InvalidLocation and self.locations[i] != UnsetPip) {
-                std.debug.print("{d}={d},", .{ i, self.locations[i] });
+        for (0..state.locations.len) |i| {
+            if (state.locations[i] != InvalidLocation and state.locations[i] != UnsetPip) {
+                std.debug.print("{d}={d},", .{ i, state.locations[i] });
             }
         }
         std.debug.print("\n", .{});
@@ -295,12 +295,12 @@ const Solver = struct {
                         },
                     };
 
-                    if (self.getLoc(l1) != UnsetPip or self.getLoc(l2) != UnsetPip) continue :outer;
+                    if (state.locations[l1] != UnsetPip or state.locations[l2] != UnsetPip) continue :outer;
                     if (!self.addToCache(state, domino, region_index, l2)) {
                         continue :outer;
                     }
-                    self.setLoc(l1, domino[0]);
-                    self.setLoc(l2, domino[1]);
+                    state.locations[l1] = domino[0];
+                    state.locations[l2] = domino[1];
 
                     const validated = self.validate(state);
                     if (!self.fast) {
@@ -321,8 +321,8 @@ const Solver = struct {
                     state.push(l1, l2);
                     switch (validated) {
                         .InvalidBranch => {
-                            self.setLoc(l1, UnsetPip);
-                            self.setLoc(l2, UnsetPip);
+                            state.locations[l1] = UnsetPip;
+                            state.locations[l2] = UnsetPip;
                             self.removeFromCache(state, domino, region_index, l2);
                             _ = state.pop();
                             continue :outer;
@@ -331,8 +331,8 @@ const Solver = struct {
                             switch (try self.solve(state, options)) {
                                 .Solved => return .Solved,
                                 .InvalidBranch, .NotSolved => {
-                                    self.setLoc(l1, UnsetPip);
-                                    self.setLoc(l2, UnsetPip);
+                                    state.locations[l1] = UnsetPip;
+                                    state.locations[l2] = UnsetPip;
                                     self.removeFromCache(state, domino, region_index, l2);
                                     _ = state.pop();
                                     continue :outer;
@@ -353,17 +353,6 @@ const Solver = struct {
             }
         }
         return .InvalidBranch;
-    }
-
-    pub fn sumRegion(self: *const Solver, region: *const SolverRegion) u8 {
-        var sum: u8 = 0;
-        for (region.indices.items) |location| {
-            const value = self.getLoc(location);
-            if (value <= 6) {
-                sum += value;
-            }
-        }
-        return sum;
     }
 
     fn errMsg(self: *Solver, comptime fmt: []const u8, args: anytype) void {
@@ -509,7 +498,7 @@ pub fn main(init: std.process.Init) !void {
             defer solver.deinit(allocator);
 
             const start = std.Io.Clock.real.now(init.io);
-            var sol_state = SolverState{};
+            var sol_state = solver.newState();
             const solution = try solver.solve(&sol_state, &.{});
             // Capture end time
             const end = std.Io.Clock.real.now(init.io);
@@ -527,7 +516,7 @@ pub fn main(init: std.process.Init) !void {
                 @tagName(solution),
                 duration.toMilliseconds(),
             });
-            solver.printDominos();
+            solver.printDominos(&sol_state);
         }
     }
 }
