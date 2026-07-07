@@ -87,8 +87,8 @@ const SolverRegion = struct {
 };
 
 const PlacedDomino = struct {
-    location: Location,
-    orientation: Orientation,
+    l1: Location,
+    l2: Location,
 };
 
 // Easily copyable (i.e. no pointers) state for multiprocessing
@@ -97,6 +97,16 @@ const SolverState = struct {
     region_cache: [MAX_REGIONS]u8 = [_]u8{0} ** MAX_REGIONS,
     placed: [MAX_DOMINOES]PlacedDomino = undefined,
     index: usize = 0, // Index of the domino to be worked next
+
+    pub fn push(self: *SolverState, l1: Location, l2: Location) void {
+        self.placed[self.index] = PlacedDomino{ .l1 = l1, .l2 = l2 };
+        self.index += 1;
+    }
+
+    pub fn pop(self: *SolverState) PlacedDomino {
+        self.index -= 1;
+        return self.placed[self.index + 1];
+    }
 };
 
 const Solver = struct {
@@ -261,32 +271,32 @@ const Solver = struct {
         std.debug.print("\n", .{});
     }
 
-    pub fn solve(self: *Solver, state: *SolverState, index: usize) !SolutionStatus {
-        const domino = self.puzzle.dominoes[index];
+    pub fn solve(self: *Solver, state: *SolverState) !SolutionStatus {
+        const domino = self.puzzle.dominoes[state.index];
         for (self.regions.items, 0..) |*region, region_index| {
-            for (region.indices.items) |location| {
+            for (region.indices.items) |l1| {
                 outer: for (std.enums.values(Orientation)) |orientation| {
                     const l2: Location = switch (orientation) {
-                        .right => location + 1,
+                        .right => l1 + 1,
                         .left => blk: {
-                            if (location % MAX_X == 0) continue :outer;
-                            break :blk location - 1;
+                            if (l1 % MAX_X == 0) continue :outer;
+                            break :blk l1 - 1;
                         },
-                        .down => location + MAX_X,
+                        .down => l1 + MAX_X,
                         .up => blk: {
-                            if (location / MAX_X == 0) continue :outer;
-                            break :blk location - MAX_X;
+                            if (l1 / MAX_X == 0) continue :outer;
+                            break :blk l1 - MAX_X;
                         },
                     };
 
-                    if (self.getLoc(location) != UnsetPip or self.getLoc(l2) != UnsetPip) continue :outer;
+                    if (self.getLoc(l1) != UnsetPip or self.getLoc(l2) != UnsetPip) continue :outer;
                     if (!self.addToCache(state, domino, region_index, l2)) {
                         continue :outer;
                     }
-                    self.setLoc(location, domino[0]);
+                    self.setLoc(l1, domino[0]);
                     self.setLoc(l2, domino[1]);
 
-                    const validated = self.validate(state, index);
+                    const validated = self.validate(state);
                     if (!self.fast) {
                         // std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
                         //     dp.domino[0],
@@ -302,20 +312,23 @@ const Solver = struct {
                         // });
                     }
 
+                    state.push(l1, l2);
                     switch (validated) {
                         .InvalidBranch => {
-                            self.setLoc(location, UnsetPip);
+                            self.setLoc(l1, UnsetPip);
                             self.setLoc(l2, UnsetPip);
                             self.removeFromCache(state, domino, region_index, l2);
+                            _ = state.pop();
                             continue :outer;
                         },
                         .NotSolved => {
-                            switch (try self.solve(state, index + 1)) {
+                            switch (try self.solve(state)) {
                                 .Solved => return .Solved,
                                 .InvalidBranch, .NotSolved => {
-                                    self.setLoc(location, UnsetPip);
+                                    self.setLoc(l1, UnsetPip);
                                     self.setLoc(l2, UnsetPip);
                                     self.removeFromCache(state, domino, region_index, l2);
+                                    _ = state.pop();
                                     continue :outer;
                                 },
                             }
@@ -347,8 +360,8 @@ const Solver = struct {
         }
     }
 
-    pub fn validate(self: *Solver, state: *SolverState, index: usize) SolutionStatus {
-        if (index + 1 == self.puzzle.dominoes.len) {
+    pub fn validate(self: *Solver, state: *SolverState) SolutionStatus {
+        if (state.index + 1 == self.puzzle.dominoes.len) {
             for (self.regions.items, 0..) |region, region_index| {
                 switch (region.type) {
                     .empty => {
@@ -485,7 +498,7 @@ pub fn main(init: std.process.Init) !void {
 
             const start = std.Io.Clock.real.now(init.io);
             var sol_state = SolverState{};
-            const solution = try solver.solve(&sol_state, 0);
+            const solution = try solver.solve(&sol_state);
             // Capture end time
             const end = std.Io.Clock.real.now(init.io);
 
