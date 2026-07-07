@@ -84,7 +84,6 @@ const SolverRegion = struct {
     // equals: complicated, see addToregioncache
     // empty: running count
     // notEquals: bitmap of set pips
-    cache: u8 = 0,
 };
 
 const PlacedDomino = struct {
@@ -97,6 +96,7 @@ const SolverState = struct {
     locations: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
     region_cache: [MAX_REGIONS]u8 = [_]u8{0} ** MAX_REGIONS,
     placed: [MAX_DOMINOES]PlacedDomino = undefined,
+    index: usize = 0, // Index of the domino to be worked next
 };
 
 const Solver = struct {
@@ -130,17 +130,6 @@ const Solver = struct {
             s.regions.appendAssumeCapacity(sr);
         }
         return s;
-    }
-
-    // Reset all placed dominoes
-    pub fn reset(self: *Solver) void {
-        self.locations = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y);
-        for (self.regions.items) |*region| {
-            region.cache = 0;
-            for (region.indices.items) |i| {
-                self.setLoc(i, UnsetPip);
-            }
-        }
     }
 
     pub fn deinit(self: *Solver, gpa: std.mem.Allocator) void {
@@ -360,21 +349,21 @@ const Solver = struct {
 
     pub fn validate(self: *Solver, state: *SolverState, index: usize) SolutionStatus {
         if (index + 1 == self.puzzle.dominoes.len) {
-            for (self.regions.items, 0..) |region, ri| {
+            for (self.regions.items, 0..) |region, region_index| {
                 switch (region.type) {
                     .empty => {
                         // If we're full, we can assume all pips are filled
-                        std.debug.assert(state.region_cache[ri] == region.indices.items.len);
+                        std.debug.assert(state.region_cache[region_index] == region.indices.items.len);
                     },
                     .greater => {
-                        if (state.region_cache[ri] <= region.target) {
-                            self.errMsg("target >{d} fails, found {d}", .{ region.target, region.cache });
+                        if (state.region_cache[region_index] <= region.target) {
+                            self.errMsg("target >{d} fails, found {d}", .{ region.target, state.region_cache[region_index] });
                             return .InvalidBranch;
                         }
                     },
                     .sum => {
-                        if (state.region_cache[ri] != region.target) {
-                            self.errMsg("target ={d} fails, found {d}", .{ region.target, region.cache });
+                        if (state.region_cache[region_index] != region.target) {
+                            self.errMsg("target ={d} fails, found {d}", .{ region.target, state.region_cache[region_index] });
                             return .InvalidBranch;
                         }
                     },
