@@ -45,9 +45,12 @@ const NYTFormat = struct {
     hard: Puzzle,
 };
 
+const PlacedDominoCoordinate = [2]Coordinate;
+
 const Puzzle = struct {
     regions: []Region,
     dominoes: []Domino,
+    solution: []PlacedDominoCoordinate,
 
     pub fn maxXY(self: *Puzzle) [2]usize {
         var maxX: usize = 0;
@@ -112,7 +115,8 @@ const SolverState = struct {
 
 const SolverOptions = struct {
     max_depth: ?usize = null,
-    depth_solutions: ?std.ArrayList(SolverState) = null,
+    max_depth_states: ?*std.ArrayList(SolverState) = null,
+    allocator: ?std.mem.Allocator = null,
 };
 
 const Solver = struct {
@@ -122,6 +126,7 @@ const Solver = struct {
     last_failure: []const u8 = "",
     last_failure_buf: [128]u8 = undefined,
     regions: [MAX_REGIONS]SolverRegion = undefined,
+    solution: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
     region_len: usize,
     fast: bool = true,
 
@@ -143,6 +148,10 @@ const Solver = struct {
                 sr.indices.appendAssumeCapacity(coordToLoc(i));
             }
             s.regions[region_index] = sr;
+        }
+        for (0..puzzle.dominoes.len) |di| {
+            s.solution[coordToLoc(puzzle.solution[di][0])] = puzzle.dominoes[di][0];
+            s.solution[coordToLoc(puzzle.solution[di][1])] = puzzle.dominoes[di][1];
         }
         return s;
     }
@@ -269,7 +278,7 @@ const Solver = struct {
         }
     }
 
-    pub fn printDominos(_: *const Solver, state: *SolverState) void {
+    pub fn printDominos(_: *const Solver, state: *const SolverState) void {
         std.debug.print("s: ", .{});
         for (0..state.locations.len) |i| {
             if (state.locations[i] != InvalidLocation and state.locations[i] != UnsetPip) {
@@ -279,12 +288,31 @@ const Solver = struct {
         std.debug.print("\n", .{});
     }
 
+    pub fn printSolution(self: *const Solver) void {
+        std.debug.print("e: ", .{});
+        for (0..self.solution.len) |i| {
+            if (self.solution[i] != InvalidLocation and self.solution[i] != UnsetPip) {
+                std.debug.print("{d}={d},", .{ i, self.solution[i] });
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    pub fn checkSolution(self: *const Solver, state: *const SolverState) bool {
+        for (0..self.solution.len) |i| {
+            if (self.solution[i] != state.locations[i]) return false;
+        }
+        return true;
+    }
+
     pub fn solve(self: *Solver, state: *SolverState, options: *const SolverOptions) !SolutionStatus {
         const domino = self.puzzle.dominoes[state.index];
         for (0..self.region_len) |region_index| {
             const region = self.regions[region_index];
             for (region.indices.items) |l1| {
                 outer: for (std.enums.values(Orientation)) |orientation| {
+                    // Don't check twin pips twice
+                    if (domino[0] == domino[1] and (orientation == .left or orientation == .up)) continue :outer;
                     const l2: Location = switch (orientation) {
                         .right => l1 + 1,
                         .left => blk: {
@@ -331,17 +359,24 @@ const Solver = struct {
                             continue :outer;
                         },
                         .NotSolved => {
-                            switch (try self.solve(state, options)) {
-                                .Solved => return .Solved,
-                                .InvalidBranch, .NotSolved => {
+                            if (options.max_depth) |max_depth| {
+                                if (state.index == max_depth) {
+                                    try options.max_depth_states.?.append(options.allocator.?, state.*);
                                     state.locations[l1] = UnsetPip;
                                     state.locations[l2] = UnsetPip;
                                     self.removeFromCache(state, domino, region_index, l2);
                                     _ = state.pop();
                                     continue :outer;
-                                },
-                                .Halted => {
-                                    unreachable;
+                                }
+                            }
+                            switch (try self.solve(state, options)) {
+                                .Solved => return .Solved,
+                                .InvalidBranch, .NotSolved, .Halted => {
+                                    state.locations[l1] = UnsetPip;
+                                    state.locations[l2] = UnsetPip;
+                                    self.removeFromCache(state, domino, region_index, l2);
+                                    _ = state.pop();
+                                    continue :outer;
                                 },
                             }
                         },
@@ -398,42 +433,6 @@ const Solver = struct {
             }
             return .Solved;
         } else {
-            // Check invariants
-            for (0..self.region_len) |region_index| {
-                const region = self.regions[region_index];
-                switch (region.type) {
-                    .empty, .greater => {},
-                    .sum => {},
-                    .less => {},
-                    .equals => {
-                        // var firstFoundPip: u8 = UnsetPip;
-                        // for (region.indices.items) |i| {
-                        //     const d = self.getLoc(i);
-                        //     if (d >= 6) continue;
-                        //     if (firstFoundPip == UnsetPip) {
-                        //         firstFoundPip = d;
-                        //     } else if (d != firstFoundPip) {
-                        //         self.errMsg("target = fails early, found {d} then {d}", .{ firstFoundPip, d });
-                        //         return .InvalidBranch;
-                        //     }
-                        // }
-                    },
-                    .notEquals => {
-                        // var found: [7]bool = [_]bool{false} ** 7;
-                        // for (region.indices.items) |i| {
-                        //     const value = self.getLoc(i);
-                        //     if (value > 6) continue;
-                        //     if (found[@intCast(value)]) {
-                        //         self.errMsg("target != fails early, already found {d}\n", .{value});
-                        //         return .InvalidBranch;
-                        //     } else {
-                        //         found[@intCast(value)] = true;
-                        //     }
-                        // }
-                    },
-                }
-            }
-            self.errMsg("valid but not full", .{});
             return .NotSolved;
         }
     }
@@ -446,7 +445,7 @@ pub fn main(init: std.process.Init) !void {
     defer files.deinit(allocator);
 
     // easy, medium, hard
-    var solve: [3]bool = .{false} ** 3;
+    var solve_select: [3]bool = .{false} ** 3;
 
     var args = init.minimal.args.iterate();
     _ = args.next(); // Skip $0
@@ -455,13 +454,13 @@ pub fn main(init: std.process.Init) !void {
             if (std.mem.eql(u8, arg, "--batch")) {
                 // noop, legacy flag
             } else if (std.mem.eql(u8, arg, "--easy")) {
-                solve[0] = true;
+                solve_select[0] = true;
             } else if (std.mem.eql(u8, arg, "--medium")) {
-                solve[1] = true;
+                solve_select[1] = true;
             } else if (std.mem.eql(u8, arg, "--hard")) {
-                solve[2] = true;
+                solve_select[2] = true;
             } else if (std.mem.eql(u8, arg, "--all")) {
-                solve = .{true} ** 3;
+                solve_select = .{true} ** 3;
             }
         } else {
             try files.append(allocator, arg);
@@ -469,8 +468,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Solve all when no flags
-    if (!solve[0] and !solve[1] and !solve[2]) {
-        solve = .{true} ** 3;
+    if (!solve_select[0] and !solve_select[1] and !solve_select[2]) {
+        solve_select = .{true} ** 3;
     }
 
     var buf: [1024]u8 = undefined;
@@ -490,7 +489,12 @@ pub fn main(init: std.process.Init) !void {
         });
         defer parsed.deinit();
 
-        for (solve, 0..) |s, i| {
+        var t_io = std.Io.Threaded.init(allocator, .{});
+        defer t_io.deinit();
+
+        var group = std.Io.Group.init;
+
+        for (solve_select, 0..) |s, i| {
             if (!s) continue;
             var puzzle = switch (i) {
                 0 => parsed.value.easy,
@@ -498,33 +502,47 @@ pub fn main(init: std.process.Init) !void {
                 2 => parsed.value.hard,
                 else => parsed.value.easy,
             };
+            const puzzle_name = switch (i) {
+                0 => "easy",
+                1 => "medium",
+                2 => "hard",
+                else => "what",
+            };
 
             var solver = try Solver.init(allocator, &puzzle, init.io);
             defer solver.deinit(allocator);
 
             var sol_state = solver.newState();
-            _ = try solver.solve(&sol_state, &.{});
-
-            const start = std.Io.Clock.real.now(init.io);
-            sol_state = solver.newState();
-            const solution = try solver.solve(&sol_state, &.{});
-            // Capture end time
-            const end = std.Io.Clock.real.now(init.io);
-
-            // Calculate duration
-            const duration = start.durationTo(end);
-            std.debug.print("{s}: {s} puzzle {s} in {d}ms\n", .{
-                std.fs.path.basename(file),
-                switch (i) {
-                    0 => "easy",
-                    1 => "medium",
-                    2 => "hard",
-                    else => "other",
-                },
-                @tagName(solution),
-                duration.toMilliseconds(),
+            var states = std.ArrayList(SolverState).empty;
+            defer states.deinit(allocator);
+            _ = try solver.solve(&sol_state, &.{
+                .max_depth = 1,
+                .max_depth_states = &states,
+                .allocator = allocator,
             });
-            solver.printDominos(&sol_state);
+            for (states.items) |*state| {
+                solver.printDominos(state);
+                group.async(t_io.io(), solve, .{ t_io.io(), puzzle_name, &solver, state });
+                // try solve(t_io.io(), puzzle_name, &solver, state);
+            }
+            try group.await(t_io.io());
         }
     }
+}
+
+pub fn solve(io: std.Io, name: [:0]const u8, solver: *Solver, state: *SolverState) std.Io.Cancelable!void {
+    const start = std.Io.Clock.real.now(io);
+    const solution = solver.solve(state, &.{}) catch return std.Io.Cancelable.Canceled;
+    // Capture end time
+    const end = std.Io.Clock.real.now(io);
+
+    // Calculate duration
+    const duration = start.durationTo(end);
+    std.debug.print("{s} puzzle {s} in {d}ms\n", .{
+        name,
+        @tagName(solution),
+        duration.toMilliseconds(),
+    });
+    solver.printDominos(state);
+    solver.printSolution();
 }
