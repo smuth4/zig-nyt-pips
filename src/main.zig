@@ -27,10 +27,6 @@ const RegionType = enum { sum, equals, notEquals, greater, less, empty };
 const UnsetPip: u8 = 7;
 const InvalidLocation: u8 = 8;
 
-const SolverError = error{
-    InvalidDomino,
-};
-
 const Region = struct {
     indices: []Coordinate,
     type: RegionType,
@@ -83,11 +79,6 @@ const SolverRegion = struct {
     indices: std.ArrayList(u8) = .empty, // Differs from JSON format here
     type: RegionType,
     target: u8 = 0,
-    // Running total for regions
-    // =, >, <: running sum
-    // equals: complicated, see addToregioncache
-    // empty: running count
-    // notEquals: bitmap of set pips
 };
 
 const PlacedDomino = struct {
@@ -98,6 +89,11 @@ const PlacedDomino = struct {
 // Easily copyable (i.e. no pointers) state for multiprocessing
 const SolverState = struct {
     locations: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
+    // Running total for regions
+    // =, >, <: running sum
+    // equals: complicated, see addToregioncache
+    // empty: running count
+    // notEquals: bitmap of set pips
     region_cache: [MAX_REGIONS]u8 = [_]u8{0} ** MAX_REGIONS,
     placed: [MAX_DOMINOES]PlacedDomino = undefined,
     index: usize = 0, // Index of the domino to be worked next
@@ -127,6 +123,7 @@ const Solver = struct {
     last_failure_buf: [128]u8 = undefined,
     regions: [MAX_REGIONS]SolverRegion = undefined,
     solution: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
+    location_to_region_map: [MAX_Y * MAX_Y]*SolverRegion = undefined,
     region_len: usize,
     fast: bool = true,
 
@@ -205,13 +202,7 @@ const Solver = struct {
                     state.region_cache[ri] += 1;
                 }
             },
-            //     .notEquals => {
-            //         std.debug.print("add notEquals\n", .{});
-            //         const mask = @as(u8, 1) << @truncate(pip);
-            //         if (r.cache & mask != 0) return false;
-            //         r.cache |= mask;
-            //     },
-            else => {
+            .notEquals => {
                 return true;
             },
         }
@@ -238,11 +229,7 @@ const Solver = struct {
                     state.region_cache[ri] -= 1;
                 }
             },
-            //     .notEquals => {
-            //         const mask = @as(u8, 1) << @truncate(pip);
-            //         r.cache &= ~mask;
-            //     },
-            else => {},
+            .notEquals => {},
         }
     }
 
@@ -334,20 +321,6 @@ const Solver = struct {
                     state.locations[l2] = domino[1];
 
                     const validated = self.validate(state);
-                    if (!self.fast) {
-                        // std.debug.print("Placed domino {d}:{d} at {d}x{d}, {s}{s}\n", .{
-                        //     dp.domino[0],
-                        //     dp.domino[1],
-                        //     dp.coord[0],
-                        //     dp.coord[1],
-                        //     switch (validated) {
-                        //         .Solved => "finished",
-                        //         .InvalidBranch => "invalid: ",
-                        //         .NotSolved => "continuing",
-                        //     },
-                        //     if (validated == .InvalidBranch) self.last_failure else "",
-                        // });
-                    }
 
                     state.push(l1, l2);
                     switch (validated) {
@@ -420,13 +393,7 @@ const Solver = struct {
                             return .InvalidBranch;
                         }
                     },
-                    .less => {
-                        // We can assume the invariant was never hit
-                    },
-                    .equals => {
-                        // We can assume the invariant was never hit
-                    },
-                    .notEquals => {
+                    .less, .equals, .notEquals => {
                         // We can assume the invariant was never hit
                     },
                 }
@@ -520,6 +487,7 @@ pub fn main(init: std.process.Init) !void {
                 .max_depth_states = &states,
                 .allocator = allocator,
             });
+            std.debug.print("{s}: {d} regions, {d} dominoes\n", .{ puzzle_name, puzzle.regions.len, puzzle.dominoes.len });
             for (states.items) |*state| {
                 solver.printDominos(state);
                 group.async(t_io.io(), solve, .{ t_io.io(), puzzle_name, &solver, state });
