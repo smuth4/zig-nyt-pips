@@ -277,7 +277,7 @@ const Solver = struct {
         return true;
     }
 
-    pub fn solve(self: *Solver, state: *SolverState, options: *const SolverOptions) !SolutionStatus {
+    pub fn solve(self: *const Solver, state: *SolverState, options: *const SolverOptions) !SolutionStatus {
         const domino = self.puzzle.dominoes[state.index];
         for (0..self.region_len) |region_index| {
             const region = self.regions[region_index];
@@ -351,13 +351,7 @@ const Solver = struct {
         return .InvalidBranch;
     }
 
-    fn errMsg(self: *Solver, comptime fmt: []const u8, args: anytype) void {
-        if (!self.fast) {
-            self.last_failure = std.fmt.bufPrint(&self.last_failure_buf, fmt, args) catch "format error";
-        }
-    }
-
-    pub fn validate(self: *Solver, state: *SolverState) SolutionStatus {
+    pub fn validate(self: *const Solver, state: *SolverState) SolutionStatus {
         if (state.index + 1 == self.puzzle.dominoes.len) {
             for (0..self.region_len) |region_index| {
                 const region = self.regions[region_index];
@@ -368,13 +362,11 @@ const Solver = struct {
                     },
                     .greater => {
                         if (state.region_cache[region_index] <= region.target) {
-                            self.errMsg("target >{d} fails, found {d}", .{ region.target, state.region_cache[region_index] });
                             return .InvalidBranch;
                         }
                     },
                     .sum => {
                         if (state.region_cache[region_index] != region.target) {
-                            self.errMsg("target ={d} fails, found {d}", .{ region.target, state.region_cache[region_index] });
                             return .InvalidBranch;
                         }
                     },
