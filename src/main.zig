@@ -123,7 +123,7 @@ const Solver = struct {
     last_failure_buf: [128]u8 = undefined,
     regions: [MAX_REGIONS]SolverRegion = undefined,
     solution: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
-    location_to_region_map: [MAX_Y * MAX_Y]*SolverRegion = undefined,
+    location_to_region_map: [MAX_Y * MAX_Y]usize = undefined,
     region_len: usize,
     fast: bool = true,
 
@@ -143,6 +143,7 @@ const Solver = struct {
             try sr.indices.ensureTotalCapacity(gpa, region.indices.len);
             for (region.indices) |i| {
                 sr.indices.appendAssumeCapacity(coordToLoc(i));
+                s.location_to_region_map[coordToLoc(i)] = region_index;
             }
             s.regions[region_index] = sr;
         }
@@ -235,34 +236,18 @@ const Solver = struct {
 
     // Bit of a funky signature, we know the region for l1 directly, but have to scan for l2
     pub fn addToCache(self: *const Solver, state: *SolverState, d: Domino, ri1: usize, l2: Location) bool {
-        for (0..self.region_len) |ri2| {
-            for (self.regions[ri2].indices.items) |location| {
-                if (l2 == location) {
-                    if (!self.addToRegionCache(state, ri1, d[0])) return false;
-                    if (self.addToRegionCache(state, ri2, d[1])) {
-                        return true;
-                    } else {
-                        self.removeFromRegionCache(state, ri1, d[0]); // roll back first insert
-                        return false;
-                    }
-                }
-            }
+        if (!self.addToRegionCache(state, ri1, d[0])) return false;
+        if (self.addToRegionCache(state, self.location_to_region_map[l2], d[1])) {
+            return true;
         }
-        //self.removeFromRegionCache(r1, d[0]); // roll back first insert
+        self.removeFromRegionCache(state, ri1, d[0]); // roll back first insert
         return false;
     }
 
     // Assumes that the removal is legit, and doesn't check status
     pub fn removeFromCache(self: *const Solver, state: *SolverState, d: Domino, ri1: usize, l2: Location) void {
-        for (0..self.region_len) |ri2| {
-            const region = self.regions[ri2];
-            for (region.indices.items) |location| {
-                if (l2 == location) {
-                    self.removeFromRegionCache(state, ri1, d[0]);
-                    return self.removeFromRegionCache(state, ri2, d[1]);
-                }
-            }
-        }
+        self.removeFromRegionCache(state, ri1, d[0]);
+        self.removeFromRegionCache(state, self.location_to_region_map[l2], d[1]);
     }
 
     pub fn printDominos(_: *const Solver, state: *const SolverState) void {
