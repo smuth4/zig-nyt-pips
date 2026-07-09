@@ -21,7 +21,14 @@ const Domino = [2]u8;
 
 const Orientation = enum { right, up, left, down };
 
-const RegionType = enum { sum, equals, notEquals, greater, less, empty };
+const RegionType = enum(u8) {
+    equals = 5,
+    sum = 4,
+    greater = 3,
+    notEquals = 2,
+    less = 1,
+    empty = 0,
+};
 
 // Need some constants that aren't 0-6 but still u8
 const UnsetPip: u8 = 7;
@@ -129,13 +136,26 @@ const Solver = struct {
 
     const Stats = struct {};
 
+    fn lessThan(context: void, a: Region, b: Region) std.math.Order {
+        _ = context;
+        return std.math.order(@intFromEnum(a.type), @intFromEnum(b.type));
+    }
+
     pub fn init(gpa: std.mem.Allocator, puzzle: *Puzzle, io: std.Io) error{OutOfMemory}!Solver {
         var s = Solver{
             .puzzle = puzzle,
             .io = io,
             .region_len = puzzle.regions.len,
         };
-        for (puzzle.regions, 0..) |region, region_index| {
+
+        var region_queue: std.PriorityQueue(Region, void, lessThan) = .empty;
+        defer region_queue.deinit(gpa);
+        for (puzzle.regions) |region| {
+            try region_queue.push(gpa, region);
+        }
+
+        var region_index: usize = 0;
+        while (region_queue.pop()) |region| {
             var sr = SolverRegion{
                 .type = region.type,
                 .target = region.target,
@@ -146,6 +166,7 @@ const Solver = struct {
                 s.location_to_region_map[coordToLoc(i)] = region_index;
             }
             s.regions[region_index] = sr;
+            region_index += 1;
         }
         for (0..puzzle.dominoes.len) |di| {
             s.solution[coordToLoc(puzzle.solution[di][0])] = puzzle.dominoes[di][0];
@@ -285,6 +306,8 @@ const Solver = struct {
                 outer: for (std.enums.values(Orientation)) |orientation| {
                     // Don't check twin pips twice
                     if (domino[0] == domino[1] and (orientation == .left or orientation == .up)) continue :outer;
+                    // Check l1 before calculating l2
+                    if (state.locations[l1] != UnsetPip) continue :outer;
                     const l2: Location = switch (orientation) {
                         .right => l1 + 1,
                         .left => blk: {
@@ -298,10 +321,9 @@ const Solver = struct {
                         },
                     };
 
-                    if (state.locations[l1] != UnsetPip or state.locations[l2] != UnsetPip) continue :outer;
-                    if (!self.addToCache(state, domino, region_index, l2)) {
-                        continue :outer;
-                    }
+                    if (state.locations[l2] != UnsetPip) continue :outer;
+                    if (!self.addToCache(state, domino, region_index, l2)) continue :outer;
+
                     state.locations[l1] = domino[0];
                     state.locations[l2] = domino[1];
 
