@@ -103,16 +103,16 @@ const SolverState = struct {
     // notEquals: bitmap of set pips
     region_cache: [MAX_REGIONS]u8 = [_]u8{0} ** MAX_REGIONS,
     placed: [MAX_DOMINOES]PlacedDomino = undefined,
-    index: usize = 0, // Index of the domino to be worked next
+    placed_len: usize = 0, // Index of the domino to be worked next
 
     pub fn push(self: *SolverState, l1: Location, l2: Location) void {
-        self.placed[self.index] = PlacedDomino{ .l1 = l1, .l2 = l2 };
-        self.index += 1;
+        self.placed_len += 1;
+        self.placed[self.placed_len] = PlacedDomino{ .l1 = l1, .l2 = l2 };
     }
 
     pub fn pop(self: *SolverState) PlacedDomino {
-        const ret = self.placed[self.index];
-        self.index -= 1;
+        const ret = self.placed[self.placed_len];
+        self.placed_len -= 1;
         return ret;
     }
 };
@@ -296,7 +296,7 @@ const Solver = struct {
     }
 
     pub fn solve(self: *const Solver, state: *SolverState, options: *const SolverOptions) SolutionStatus {
-        const domino = self.puzzle.dominoes[state.index];
+        const domino = self.puzzle.dominoes[state.placed_len - 1];
         for (0..self.region_len) |region_index| {
             const region = self.regions[region_index];
             for (region.indices.items) |l1| {
@@ -337,7 +337,7 @@ const Solver = struct {
                         },
                         .NotSolved => {
                             if (options.max_depth) |max_depth| {
-                                if (state.index == max_depth) {
+                                if (state.placed_len == max_depth) {
                                     options.max_depth_states.?.append(options.allocator.?, state.*) catch continue :outer;
                                     state.locations[l1] = UnsetPip;
                                     state.locations[l2] = UnsetPip;
@@ -371,7 +371,7 @@ const Solver = struct {
     }
 
     pub fn validate(self: *const Solver, state: *SolverState) SolutionStatus {
-        if (state.index + 1 == self.puzzle.dominoes.len) {
+        if (state.placed_len == self.puzzle.dominoes.len) {
             for (0..self.region_len) |region_index| {
                 const region = self.regions[region_index];
                 switch (region.type) {
