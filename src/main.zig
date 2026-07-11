@@ -111,8 +111,9 @@ const SolverState = struct {
     }
 
     pub fn pop(self: *SolverState) PlacedDomino {
+        const ret = self.placed[self.index];
         self.index -= 1;
-        return self.placed[self.index + 1];
+        return ret;
     }
 };
 
@@ -124,10 +125,7 @@ const SolverOptions = struct {
 
 const Solver = struct {
     puzzle: *Puzzle,
-    io: std.Io,
     stats: Stats = .{},
-    last_failure: []const u8 = "",
-    last_failure_buf: [128]u8 = undefined,
     regions: [MAX_REGIONS]SolverRegion = undefined,
     solution: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
     location_to_region_map: [MAX_Y * MAX_Y]usize = undefined,
@@ -141,10 +139,9 @@ const Solver = struct {
         return std.math.order(@intFromEnum(a.type), @intFromEnum(b.type));
     }
 
-    pub fn init(gpa: std.mem.Allocator, puzzle: *Puzzle, io: std.Io) error{OutOfMemory}!Solver {
+    pub fn init(gpa: std.mem.Allocator, puzzle: *Puzzle) error{OutOfMemory}!Solver {
         var s = Solver{
             .puzzle = puzzle,
-            .io = io,
             .region_len = puzzle.regions.len,
         };
 
@@ -298,7 +295,7 @@ const Solver = struct {
         return true;
     }
 
-    pub fn solve(self: *const Solver, state: *SolverState, options: *const SolverOptions) !SolutionStatus {
+    pub fn solve(self: *const Solver, state: *SolverState, options: *const SolverOptions) SolutionStatus {
         const domino = self.puzzle.dominoes[state.index];
         for (0..self.region_len) |region_index| {
             const region = self.regions[region_index];
@@ -341,7 +338,7 @@ const Solver = struct {
                         .NotSolved => {
                             if (options.max_depth) |max_depth| {
                                 if (state.index == max_depth) {
-                                    try options.max_depth_states.?.append(options.allocator.?, state.*);
+                                    options.max_depth_states.?.append(options.allocator.?, state.*) catch continue :outer;
                                     state.locations[l1] = UnsetPip;
                                     state.locations[l2] = UnsetPip;
                                     self.removeFromCache(state, domino, region_index, l2);
@@ -349,7 +346,7 @@ const Solver = struct {
                                     continue :outer;
                                 }
                             }
-                            switch (try self.solve(state, options)) {
+                            switch (self.solve(state, options)) {
                                 .Solved => return .Solved,
                                 .InvalidBranch, .NotSolved, .Halted => {
                                     state.locations[l1] = UnsetPip;
@@ -475,13 +472,13 @@ pub fn main(init: std.process.Init) !void {
                 else => "what",
             };
 
-            var solver = try Solver.init(allocator, &puzzle, init.io);
+            var solver = try Solver.init(allocator, &puzzle);
             defer solver.deinit(allocator);
 
             var sol_state = solver.newState();
             var states = std.ArrayList(SolverState).empty;
             defer states.deinit(allocator);
-            _ = try solver.solve(&sol_state, &.{
+            _ = solver.solve(&sol_state, &.{
                 .max_depth = 1,
                 .max_depth_states = &states,
                 .allocator = allocator,
@@ -499,7 +496,7 @@ pub fn main(init: std.process.Init) !void {
 
 pub fn solve(io: std.Io, name: [:0]const u8, solver: *Solver, state: *SolverState) std.Io.Cancelable!void {
     const start = std.Io.Clock.real.now(io);
-    const solution = solver.solve(state, &.{}) catch return std.Io.Cancelable.Canceled;
+    const solution = solver.solve(state, &.{});
     // Capture end time
     const end = std.Io.Clock.real.now(io);
 
