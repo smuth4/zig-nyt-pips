@@ -106,16 +106,26 @@ const SolverState = struct {
     placed_len: usize = 0, // Index of the domino to be worked next
 
     pub fn push(self: *SolverState, l1: Location, l2: Location) void {
-        self.placed_len += 1;
         self.placed[self.placed_len] = PlacedDomino{ .l1 = l1, .l2 = l2 };
+        self.placed_len += 1;
     }
 
     pub fn pop(self: *SolverState) PlacedDomino {
-        const ret = self.placed[self.placed_len];
         self.placed_len -= 1;
-        return ret;
+        return self.placed[self.placed_len];
     }
 };
+
+test "solver state push and pop" {
+    var state = SolverState{};
+    state.push(3, 4);
+    state.push(5, 6);
+
+    try std.testing.expectEqual(@as(usize, 2), state.placed_len);
+    try std.testing.expectEqual(PlacedDomino{ .l1 = 5, .l2 = 6 }, state.pop());
+    try std.testing.expectEqual(PlacedDomino{ .l1 = 3, .l2 = 4 }, state.pop());
+    try std.testing.expectEqual(@as(usize, 0), state.placed_len);
+}
 
 const SolverOptions = struct {
     max_depth: ?usize = null,
@@ -296,7 +306,7 @@ const Solver = struct {
     }
 
     pub fn solve(self: *const Solver, state: *SolverState, options: *const SolverOptions) SolutionStatus {
-        const domino = self.puzzle.dominoes[state.placed_len - 1];
+        const domino = self.puzzle.dominoes[state.placed_len];
         for (0..self.region_len) |region_index| {
             const region = self.regions[region_index];
             for (region.indices.items) |l1| {
@@ -306,7 +316,10 @@ const Solver = struct {
                     // Check l1 before calculating l2
                     if (state.locations[l1] != UnsetPip) continue :outer;
                     const l2: Location = switch (orientation) {
-                        .right => l1 + 1,
+                        .right => blk: {
+                            if (l1 % MAX_X == MAX_X - 1) continue :outer;
+                            break :blk l1 + 1;
+                        },
                         .left => blk: {
                             if (l1 % MAX_X == 0) continue :outer;
                             break :blk l1 - 1;
@@ -324,9 +337,8 @@ const Solver = struct {
                     state.locations[l1] = domino[0];
                     state.locations[l2] = domino[1];
 
-                    const validated = self.validate(state);
-
                     state.push(l1, l2);
+                    const validated = self.validate(state);
                     switch (validated) {
                         .InvalidBranch => {
                             state.locations[l1] = UnsetPip;
