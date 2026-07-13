@@ -75,6 +75,73 @@ const MAX_REGIONS = 32;
 const MAX_X = 16;
 const MAX_Y = 16;
 
+const PuzzleValidationError = error{
+    TooManyDominoes,
+    TooManyRegions,
+    TooManyRegionIndices,
+    CoordinateOutOfBounds,
+    SolutionLengthMismatch,
+};
+
+fn validatePuzzle(puzzle: *const Puzzle) PuzzleValidationError!void {
+    if (puzzle.dominoes.len > MAX_DOMINOES) return error.TooManyDominoes;
+    if (puzzle.regions.len > MAX_REGIONS) return error.TooManyRegions;
+    if (puzzle.solution.len != puzzle.dominoes.len) return error.SolutionLengthMismatch;
+
+    for (puzzle.regions) |region| {
+        if (region.indices.len > MAX_INDICES) return error.TooManyRegionIndices;
+        for (region.indices) |coord| {
+            if (coord[0] >= MAX_X or coord[1] >= MAX_Y) return error.CoordinateOutOfBounds;
+        }
+    }
+
+    for (puzzle.solution) |placement| {
+        for (placement) |coord| {
+            if (coord[0] >= MAX_X or coord[1] >= MAX_Y) return error.CoordinateOutOfBounds;
+        }
+    }
+}
+
+test "validate puzzle limits" {
+    var valid_indices = [_]Coordinate{.{ MAX_X - 1, MAX_Y - 1 }};
+    var valid_regions = [_]Region{.{
+        .indices = &valid_indices,
+        .type = .empty,
+    }};
+    var puzzle = Puzzle{
+        .regions = &valid_regions,
+        .dominoes = &.{},
+        .solution = &.{},
+    };
+    try validatePuzzle(&puzzle);
+
+    var oversized_indices: [MAX_INDICES + 1]Coordinate = @splat(.{ 0, 0 });
+    puzzle.regions[0].indices = &oversized_indices;
+    try std.testing.expectError(error.TooManyRegionIndices, validatePuzzle(&puzzle));
+
+    var out_of_bounds_indices = [_]Coordinate{.{ MAX_X, 0 }};
+    puzzle.regions[0].indices = &out_of_bounds_indices;
+    try std.testing.expectError(error.CoordinateOutOfBounds, validatePuzzle(&puzzle));
+
+    var oversized_dominoes: [MAX_DOMINOES + 1]Domino = @splat(.{ 0, 0 });
+    puzzle.regions = &valid_regions;
+    puzzle.dominoes = &oversized_dominoes;
+    try std.testing.expectError(error.TooManyDominoes, validatePuzzle(&puzzle));
+
+    var oversized_regions: [MAX_REGIONS + 1]Region = undefined;
+    for (&oversized_regions) |*region| {
+        region.* = .{ .indices = &valid_indices, .type = .empty };
+    }
+    puzzle.regions = &oversized_regions;
+    puzzle.dominoes = &.{};
+    try std.testing.expectError(error.TooManyRegions, validatePuzzle(&puzzle));
+
+    var one_domino = [_]Domino{.{ 0, 0 }};
+    puzzle.regions = &valid_regions;
+    puzzle.dominoes = &one_domino;
+    try std.testing.expectError(error.SolutionLengthMismatch, validatePuzzle(&puzzle));
+}
+
 const SolutionStatus = enum {
     InvalidBranch, // Stop working this branch
     NotSolved, // Continue working this branch
@@ -524,6 +591,10 @@ pub fn main(init: std.process.Init) !void {
             .ignore_unknown_fields = true, // Safeguard against unexpected API fields
         });
         defer parsed.deinit();
+
+        try validatePuzzle(&parsed.value.easy);
+        try validatePuzzle(&parsed.value.medium);
+        try validatePuzzle(&parsed.value.hard);
 
         var t_io = std.Io.Threaded.init(allocator, .{});
         defer t_io.deinit();
