@@ -133,6 +133,21 @@ const SolverOptions = struct {
     allocator: ?std.mem.Allocator = null,
 };
 
+const BranchResult = struct {
+    status: SolutionStatus,
+    duration_ms: i64,
+};
+
+const PuzzleOutput = struct {
+    file: []const u8,
+    date: []const u8,
+    puzzle: []const u8,
+    regions: usize,
+    dominoes: usize,
+    duration_ms: i64,
+    branches: []const BranchResult,
+};
+
 const Solver = struct {
     puzzle: *Puzzle,
     stats: Stats = .{},
@@ -416,6 +431,10 @@ const Solver = struct {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
     var files = std.ArrayList([:0]const u8).empty;
     defer files.deinit(allocator);
 
@@ -484,41 +503,49 @@ pub fn main(init: std.process.Init) !void {
                 else => "what",
             };
 
+            const start = std.Io.Clock.real.now(t_io.io());
             var solver = try Solver.init(allocator, &puzzle);
             defer solver.deinit(allocator);
 
             var sol_state = solver.newState();
             var states = std.ArrayList(SolverState).empty;
             defer states.deinit(allocator);
+            var branch_results = std.ArrayList(BranchResult).empty;
+            defer branch_results.deinit(allocator);
             _ = solver.solve(&sol_state, &.{
                 .max_depth = 1,
                 .max_depth_states = &states,
                 .allocator = allocator,
             });
-            std.debug.print("{s}: {d} regions, {d} dominoes\n", .{ puzzle_name, puzzle.regions.len, puzzle.dominoes.len });
-            for (states.items) |*state| {
-                solver.printDominos(state);
-                group.async(t_io.io(), solve, .{ t_io.io(), puzzle_name, &solver, state });
-                // try solve(t_io.io(), puzzle_name, &solver, state);
+            try branch_results.resize(allocator, states.items.len);
+            for (states.items, branch_results.items) |*state, *result| {
+                group.async(t_io.io(), solve, .{ t_io.io(), &solver, state, result });
             }
             try group.await(t_io.io());
+            const end = std.Io.Clock.real.now(t_io.io());
+
+            try std.json.Stringify.value(PuzzleOutput{
+                .file = file,
+                .date = parsed.value.printDate,
+                .puzzle = puzzle_name,
+                .regions = puzzle.regions.len,
+                .dominoes = puzzle.dominoes.len,
+                .duration_ms = start.durationTo(end).toMilliseconds(),
+                .branches = branch_results.items,
+            }, .{}, stdout);
+            try stdout.writeByte('\n');
+            try stdout.flush();
         }
     }
 }
 
-pub fn solve(io: std.Io, name: [:0]const u8, solver: *Solver, state: *SolverState) std.Io.Cancelable!void {
+pub fn solve(io: std.Io, solver: *Solver, state: *SolverState, result: *BranchResult) std.Io.Cancelable!void {
     const start = std.Io.Clock.real.now(io);
     const solution = solver.solve(state, &.{});
-    // Capture end time
     const end = std.Io.Clock.real.now(io);
 
-    // Calculate duration
-    const duration = start.durationTo(end);
-    std.debug.print("{s} puzzle {s} in {d}ms\n", .{
-        name,
-        @tagName(solution),
-        duration.toMilliseconds(),
-    });
-    solver.printDominos(state);
-    solver.printSolution();
+    result.* = .{
+        .status = solution,
+        .duration_ms = start.durationTo(end).toMilliseconds(),
+    };
 }
