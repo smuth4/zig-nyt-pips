@@ -235,7 +235,6 @@ const Solver = struct {
     solution: [MAX_Y * MAX_Y]u8 = @splat(InvalidLocation),
     location_to_region_map: [MAX_Y * MAX_Y]usize = undefined,
     region_len: usize,
-    fast: bool = true,
 
     const Stats = struct {};
 
