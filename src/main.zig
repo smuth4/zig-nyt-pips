@@ -127,11 +127,23 @@ test "solver state push and pop" {
     try std.testing.expectEqual(@as(usize, 0), state.placed_len);
 }
 
-const SolverOptions = struct {
-    max_depth: ?usize = null,
-    max_depth_states: ?*std.ArrayList(SolverState) = null,
-    allocator: ?std.mem.Allocator = null,
+const SearchMode = enum {
+    frontier,
+    first_solution,
 };
+
+fn SearchContext(comptime mode: SearchMode) type {
+    return switch (mode) {
+        .frontier => struct {
+            max_depth: usize,
+            states: *std.ArrayList(SolverState),
+            allocator: std.mem.Allocator,
+        },
+        .first_solution => struct {
+            halt: *std.atomic.Value(bool),
+        },
+    };
+}
 
 const BranchResult = struct {
     status: SolutionStatus,
@@ -320,12 +332,34 @@ const Solver = struct {
         return true;
     }
 
-    pub fn solve(self: *const Solver, state: *SolverState, options: *const SolverOptions) SolutionStatus {
+    pub fn generateFrontier(self: *const Solver, state: *SolverState, max_depth: usize, states: *std.ArrayList(SolverState), allocator: std.mem.Allocator) void {
+        var context = SearchContext(.frontier){
+            .max_depth = max_depth,
+            .states = states,
+            .allocator = allocator,
+        };
+        _ = self.search(state, .frontier, &context);
+    }
+
+    pub fn solveFirst(self: *const Solver, state: *SolverState, halt: *std.atomic.Value(bool)) SolutionStatus {
+        var context = SearchContext(.first_solution){ .halt = halt };
+        return self.search(state, .first_solution, &context);
+    }
+
+    fn search(self: *const Solver, state: *SolverState, comptime mode: SearchMode, context: *SearchContext(mode)) SolutionStatus {
+        if (comptime mode == .first_solution) {
+            if (context.halt.load(.acquire)) return .Halted;
+        }
+
         const domino = self.puzzle.dominoes[state.placed_len];
         for (0..self.region_len) |region_index| {
+            if (comptime mode == .first_solution) {
+                if (context.halt.load(.acquire)) return .Halted;
+            }
             const region = self.regions[region_index];
             for (region.indices.items) |l1| {
                 outer: for (std.enums.values(Orientation)) |orientation| {
+
                     // Don't check twin pips twice
                     if (domino[0] == domino[1] and (orientation == .left or orientation == .up)) continue :outer;
                     // Check l1 before calculating l2
@@ -363,9 +397,9 @@ const Solver = struct {
                             continue :outer;
                         },
                         .NotSolved => {
-                            if (options.max_depth) |max_depth| {
-                                if (state.placed_len == max_depth) {
-                                    options.max_depth_states.?.append(options.allocator.?, state.*) catch continue :outer;
+                            if (comptime mode == .frontier) {
+                                if (state.placed_len == context.max_depth) {
+                                    context.states.append(context.allocator, state.*) catch continue :outer;
                                     state.locations[l1] = UnsetPip;
                                     state.locations[l2] = UnsetPip;
                                     self.removeFromCache(state, domino, region_index, l2);
@@ -373,18 +407,26 @@ const Solver = struct {
                                     continue :outer;
                                 }
                             }
-                            switch (self.solve(state, options)) {
+                            switch (self.search(state, mode, context)) {
                                 .Solved => return .Solved,
-                                .InvalidBranch, .NotSolved, .Halted => {
+                                .InvalidBranch, .NotSolved => {
                                     state.locations[l1] = UnsetPip;
                                     state.locations[l2] = UnsetPip;
                                     self.removeFromCache(state, domino, region_index, l2);
                                     _ = state.pop();
                                     continue :outer;
                                 },
+                                .Halted => {
+                                    state.locations[l1] = UnsetPip;
+                                    state.locations[l2] = UnsetPip;
+                                    self.removeFromCache(state, domino, region_index, l2);
+                                    _ = state.pop();
+                                    return .Halted;
+                                },
                             }
                         },
                         .Solved => {
+                            if (comptime mode == .first_solution) context.halt.store(true, .release);
                             return .Solved;
                         },
                         .Halted => {
@@ -512,14 +554,11 @@ pub fn main(init: std.process.Init) !void {
             defer states.deinit(allocator);
             var branch_results = std.ArrayList(BranchResult).empty;
             defer branch_results.deinit(allocator);
-            _ = solver.solve(&sol_state, &.{
-                .max_depth = 1,
-                .max_depth_states = &states,
-                .allocator = allocator,
-            });
+            var halt = std.atomic.Value(bool).init(false);
+            solver.generateFrontier(&sol_state, 1, &states, allocator);
             try branch_results.resize(allocator, states.items.len);
             for (states.items, branch_results.items) |*state, *result| {
-                group.async(t_io.io(), solve, .{ t_io.io(), &solver, state, result });
+                group.async(t_io.io(), solve, .{ t_io.io(), &solver, state, result, &halt });
             }
             try group.await(t_io.io());
             const end = std.Io.Clock.real.now(t_io.io());
@@ -539,9 +578,9 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-pub fn solve(io: std.Io, solver: *Solver, state: *SolverState, result: *BranchResult) std.Io.Cancelable!void {
+pub fn solve(io: std.Io, solver: *Solver, state: *SolverState, result: *BranchResult, halt: *std.atomic.Value(bool)) std.Io.Cancelable!void {
     const start = std.Io.Clock.real.now(io);
-    const solution = solver.solve(state, &.{});
+    const solution = solver.solveFirst(state, halt);
     const end = std.Io.Clock.real.now(io);
 
     result.* = .{
