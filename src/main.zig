@@ -95,13 +95,13 @@ const PlacedDomino = struct {
 
 // Easily copyable (i.e. no pointers) state for multiprocessing
 const SolverState = struct {
-    locations: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
+    locations: [MAX_Y * MAX_Y]u8 = @splat(InvalidLocation),
     // Running total for regions
     // =, >, <: running sum
     // equals: complicated, see addToregioncache
     // empty: running count
     // notEquals: bitmap of set pips
-    region_cache: [MAX_REGIONS]u8 = [_]u8{0} ** MAX_REGIONS,
+    region_cache: [MAX_REGIONS]u8 = @splat(0),
     placed: [MAX_DOMINOES]PlacedDomino = undefined,
     placed_len: usize = 0, // Index of the domino to be worked next
 
@@ -137,7 +137,7 @@ const Solver = struct {
     puzzle: *Puzzle,
     stats: Stats = .{},
     regions: [MAX_REGIONS]SolverRegion = undefined,
-    solution: [MAX_Y * MAX_Y]u8 = [_]u8{InvalidLocation} ** (MAX_Y * MAX_Y),
+    solution: [MAX_Y * MAX_Y]u8 = @splat(InvalidLocation),
     location_to_region_map: [MAX_Y * MAX_Y]usize = undefined,
     region_len: usize,
     fast: bool = true,
@@ -420,7 +420,7 @@ pub fn main(init: std.process.Init) !void {
     defer files.deinit(allocator);
 
     // easy, medium, hard
-    var solve_select: [3]bool = .{false} ** 3;
+    var solve_select: [3]bool = .{ false, false, false };
 
     var args = init.minimal.args.iterate();
     _ = args.next(); // Skip $0
@@ -435,7 +435,7 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.eql(u8, arg, "--hard")) {
                 solve_select[2] = true;
             } else if (std.mem.eql(u8, arg, "--all")) {
-                solve_select = .{true} ** 3;
+                solve_select = .{ true, true, true };
             }
         } else {
             try files.append(allocator, arg);
@@ -444,7 +444,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Solve all when no flags
     if (!solve_select[0] and !solve_select[1] and !solve_select[2]) {
-        solve_select = .{true} ** 3;
+        solve_select = .{ true, true, true };
     }
 
     var buf: [1024]u8 = undefined;
