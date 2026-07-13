@@ -169,6 +169,7 @@ const SolverState = struct {
     // empty: running count
     // notEquals: bitmap of set pips
     region_cache: [MAX_REGIONS]u8 = @splat(0),
+    region_unfilled: [MAX_REGIONS]u8 = @splat(0),
     placed: [MAX_DOMINOES]PlacedDomino = undefined,
     placed_len: usize = 0, // Index of the domino to be worked next
 
@@ -280,6 +281,7 @@ const Solver = struct {
         var state = SolverState{};
         for (0..self.region_len) |region_index| {
             const region = self.regions[region_index];
+            state.region_unfilled[region_index] = @truncate(region.indices.items.len);
             for (region.indices.items) |i| {
                 state.locations[i] = UnsetPip;
             }
@@ -299,16 +301,20 @@ const Solver = struct {
             .sum => {
                 if (state.region_cache[ri] + pip > r.target) return false;
                 state.region_cache[ri] += pip;
+                state.region_unfilled[ri] -= 1;
             },
             .less => {
                 if (state.region_cache[ri] + pip >= r.target) return false;
                 state.region_cache[ri] += pip;
+                state.region_unfilled[ri] -= 1;
             },
             .greater => {
+                if (state.region_cache[ri] + pip * (state.region_unfilled[ri] * 6) < r.target) return false;
                 state.region_cache[ri] += pip;
+                state.region_unfilled[ri] -= 1;
             },
             .empty => {
-                state.region_cache[ri] += 1;
+                state.region_unfilled[ri] -= 1;
             },
             .equals => {
                 // Use the first 3 bits for the pip. The rest is a
@@ -318,11 +324,13 @@ const Solver = struct {
                 const count: u5 = @truncate(state.region_cache[ri]);
                 if (count == 0) {
                     state.region_cache[ri] = (@as(u8, pip) << 5) | @as(u8, 1);
+                    state.region_unfilled[ri] -= 1;
                 } else if (cpip != pip) {
                     return false;
                 } else {
                     std.debug.assert(count != 31); // Would corrupt the state if so
                     state.region_cache[ri] += 1;
+                    state.region_unfilled[ri] -= 1;
                 }
             },
             .notEquals => {
@@ -337,9 +345,10 @@ const Solver = struct {
         switch (r.type) {
             .sum, .less, .greater => {
                 state.region_cache[ri] -= pip;
+                state.region_unfilled[ri] += 1;
             },
             .empty => {
-                state.region_cache[ri] -= 1;
+                state.region_unfilled[ri] += 1;
             },
             .equals => {
                 // Use the first 3 bits for the pip. The rest is a
@@ -348,8 +357,10 @@ const Solver = struct {
                 const count: u5 = @truncate(state.region_cache[ri]);
                 if (count == 1) {
                     state.region_cache[ri] = 0;
+                    state.region_unfilled[ri] += 1;
                 } else {
                     state.region_cache[ri] -= 1;
+                    state.region_unfilled[ri] += 1;
                 }
             },
             .notEquals => {},
@@ -513,7 +524,7 @@ const Solver = struct {
                 switch (region.type) {
                     .empty => {
                         // If we're full, we can assume all pips are filled
-                        std.debug.assert(state.region_cache[region_index] == region.indices.items.len);
+                        std.debug.assert(state.region_unfilled[region_index] == 0);
                     },
                     .greater => {
                         if (state.region_cache[region_index] <= region.target) {
