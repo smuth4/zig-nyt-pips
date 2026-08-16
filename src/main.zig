@@ -564,9 +564,7 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next(); // Skip $0
     while (args.next()) |arg| {
         if (arg[0] == '-' and arg[1] == '-') {
-            if (std.mem.eql(u8, arg, "--batch")) {
-                // noop, legacy flag
-            } else if (std.mem.eql(u8, arg, "--easy")) {
+            if (std.mem.eql(u8, arg, "--easy")) {
                 solve_select[0] = true;
             } else if (std.mem.eql(u8, arg, "--medium")) {
                 solve_select[1] = true;
