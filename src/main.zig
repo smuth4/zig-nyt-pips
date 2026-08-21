@@ -249,6 +249,7 @@ const Solver = struct {
             .region_len = puzzle.regions.len,
         };
 
+        // Prioritize filling certain region types based on the enum's value
         var region_queue: std.PriorityQueue(Region, void, lessThan) = .empty;
         defer region_queue.deinit(gpa);
         for (puzzle.regions) |region| {
@@ -459,6 +460,10 @@ const Solver = struct {
                     };
 
                     if (state.locations[l2] != UnsetPip) continue :outer;
+
+                    const ri2 = self.location_to_region_map[l2];
+                    if (region_index == ri2 and (orientation == .left or orientation == .up)) continue :outer;
+
                     if (!self.addToCache(state, domino, region_index, l2)) continue :outer;
 
                     state.locations[l1] = domino[0];
