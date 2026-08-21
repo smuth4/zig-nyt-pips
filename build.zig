@@ -129,8 +129,6 @@ pub fn build(b: *std.Build) void {
     // root module. Note that test executables only test one module at a time,
     // hence why we have to create two separate ones.
 
-    exe.root_module.link_libc = true;
-
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
     });
