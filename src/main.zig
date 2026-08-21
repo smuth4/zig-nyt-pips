@@ -435,12 +435,13 @@ const Solver = struct {
             }
             const region = self.regions[region_index];
             for (region.indices.items) |l1| {
+                // Check l1 before calculating l2
+                if (state.locations[l1] != UnsetPip) continue;
                 outer: for (std.enums.values(Orientation)) |orientation| {
 
                     // Don't check twin pips twice
                     if (domino[0] == domino[1] and (orientation == .left or orientation == .up)) continue :outer;
-                    // Check l1 before calculating l2
-                    if (state.locations[l1] != UnsetPip) continue :outer;
+
                     const l2: Location = switch (orientation) {
                         .right => blk: {
                             if (l1 % MAX_X == MAX_X - 1) continue :outer;
