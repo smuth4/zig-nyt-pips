@@ -319,15 +319,15 @@ const Solver = struct {
                 // Use the first 3 bits for the pip. The rest is a
                 // running count so that we can know when to remove it
                 // entirely.
-                const cpip: u3 = @truncate(state.region_cache[ri] >> 5);
-                const count: u5 = @truncate(state.region_cache[ri]);
-                if (count == 0) {
+                const cached_pip: u3 = @truncate(state.region_cache[ri] >> 5);
+                const cached_count: u5 = @truncate(state.region_cache[ri]);
+                if (cached_count == 0) {
                     state.region_cache[ri] = (@as(u8, pip) << 5) | @as(u8, 1);
                     state.region_unfilled[ri] -= 1;
-                } else if (cpip != pip) {
+                } else if (cached_pip != pip) {
                     return false;
                 } else {
-                    std.debug.assert(count != 31); // Would corrupt the state if so
+                    std.debug.assert(cached_count != 31); // Would corrupt the state if so
                     state.region_cache[ri] += 1;
                     state.region_unfilled[ri] -= 1;
                 }
@@ -353,8 +353,8 @@ const Solver = struct {
                 // Use the first 3 bits for the pip. The rest is a
                 // running count so that we can know when to remove it
                 // entirely.
-                const count: u5 = @truncate(state.region_cache[ri]);
-                if (count == 1) {
+                const cached_count: u5 = @truncate(state.region_cache[ri]);
+                if (cached_count == 1) {
                     state.region_cache[ri] = 0;
                     state.region_unfilled[ri] += 1;
                 } else {
