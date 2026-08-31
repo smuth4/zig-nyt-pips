@@ -24,7 +24,7 @@ const RegionType = enum(u8) {
     equals = 5,
     sum = 4,
     greater = 3,
-    notEquals = 2,
+    unequal = 2,
     less = 1,
     empty = 0,
 };
@@ -342,7 +342,14 @@ const Solver = struct {
                     state.region_unfilled[ri] -= 1;
                 }
             },
-            .notEquals => {
+            .unequal => {
+                const bit_mask: u8 = (@as(u8, 1) << @truncate(pip));
+                if (state.region_cache[ri] & bit_mask == 0) {
+                    state.region_cache[ri] |= bit_mask;
+                } else {
+                    return false;
+                }
+                state.region_unfilled[ri] -= 1;
                 return true;
             },
         }
@@ -372,7 +379,11 @@ const Solver = struct {
                     state.region_unfilled[ri] += 1;
                 }
             },
-            .notEquals => {},
+            .unequal => {
+                const bit_mask: u8 = (@as(u8, 1) << @truncate(pip));
+                state.region_cache[ri] &= ~bit_mask;
+                state.region_unfilled[ri] += 1;
+            },
         }
     }
 
@@ -550,7 +561,7 @@ const Solver = struct {
                             return .InvalidBranch;
                         }
                     },
-                    .less, .equals, .notEquals => {
+                    .less, .equals, .unequal => {
                         // We can assume the invariant was never hit
                     },
                 }
