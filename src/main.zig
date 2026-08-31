@@ -1,5 +1,4 @@
 const std = @import("std");
-const zig_nyt_pips = @import("zig_nyt_pips");
 
 const Coordinate = [2]u8;
 const Location = u8;
@@ -170,7 +169,7 @@ const SolverState = struct {
     // notEquals: bitmap of set pips
     region_cache: [MAX_REGIONS]u8 = @splat(0),
     region_unfilled: [MAX_REGIONS]u8 = @splat(0),
-    placed: [MAX_DOMINOES]PlacedDomino = undefined,
+    placed: [MAX_DOMINOES]PlacedDomino,
     placed_len: usize = 0, // Index of the domino to be worked next
 
     pub fn push(self: *SolverState, l1: Location, l2: Location) void {
@@ -185,7 +184,10 @@ const SolverState = struct {
 };
 
 test "solver state push and pop" {
-    var state = SolverState{};
+    var state = SolverState{
+        // SAFETY: will be filled in by push()s
+        .placed = undefined,
+    };
     state.push(3, 4);
     state.push(5, 6);
 
@@ -231,22 +233,26 @@ const PuzzleOutput = struct {
 const Solver = struct {
     puzzle: *Puzzle,
     stats: Stats = .{},
-    regions: [MAX_REGIONS]SolverRegion = undefined,
+    regions: [MAX_REGIONS]SolverRegion,
     solution: [MAX_Y * MAX_Y]u8 = @splat(InvalidLocation),
-    location_to_region_map: [MAX_Y * MAX_Y]usize = undefined,
+    location_to_region_map: [MAX_Y * MAX_Y]usize,
     region_len: usize,
 
     const Stats = struct {};
 
     fn lessThan(context: void, a: Region, b: Region) std.math.Order {
         _ = context;
-        return std.math.order(@intFromEnum(a.type), @intFromEnum(b.type));
+        return std.math.order(@backingInt(a.type), @backingInt(b.type));
     }
 
     pub fn init(gpa: std.mem.Allocator, puzzle: *Puzzle) error{OutOfMemory}!Solver {
         var s = Solver{
             .puzzle = puzzle,
             .region_len = puzzle.regions.len,
+            // SAFETY: Gets filled in in a specific order later
+            .regions = undefined,
+            // SAFETY: Not all of these need to be filled
+            .location_to_region_map = undefined,
         };
 
         // Prioritize filling certain region types based on the enum's value
@@ -278,7 +284,10 @@ const Solver = struct {
     }
 
     pub fn newState(self: *const Solver) SolverState {
-        var state = SolverState{};
+        var state = SolverState{
+            // SAFETY: will be filled in by push()s
+            .placed = undefined,
+        };
         for (0..self.region_len) |region_index| {
             const region = self.regions[region_index];
             state.region_unfilled[region_index] = @truncate(region.indices.items.len);
