@@ -304,103 +304,103 @@ const Solver = struct {
         }
     }
 
-    pub fn addToRegionCache(self: *const Solver, state: *SolverState, ri: usize, pip: u8) bool {
-        const r = self.regions[ri];
+    pub fn addToRegionCache(self: *const Solver, state: *SolverState, region_index: usize, pip: u8) bool {
+        const r = self.regions[region_index];
         switch (r.type) {
             .sum => {
-                if (state.region_cache[ri] + pip > r.target) return false;
-                state.region_cache[ri] += pip;
-                state.region_unfilled[ri] -= 1;
+                if (state.region_cache[region_index] + pip > r.target) return false;
+                state.region_cache[region_index] += pip;
+                state.region_unfilled[region_index] -= 1;
             },
             .less => {
-                if (state.region_cache[ri] + pip >= r.target) return false;
-                state.region_cache[ri] += pip;
-                state.region_unfilled[ri] -= 1;
+                if (state.region_cache[region_index] + pip >= r.target) return false;
+                state.region_cache[region_index] += pip;
+                state.region_unfilled[region_index] -= 1;
             },
             .greater => {
-                if (state.region_cache[ri] + pip * (state.region_unfilled[ri] * 6) < r.target) return false;
-                state.region_cache[ri] += pip;
-                state.region_unfilled[ri] -= 1;
+                if (state.region_cache[region_index] + pip * (state.region_unfilled[region_index] * 6) < r.target) return false;
+                state.region_cache[region_index] += pip;
+                state.region_unfilled[region_index] -= 1;
             },
             .empty => {
-                state.region_unfilled[ri] -= 1;
+                state.region_unfilled[region_index] -= 1;
             },
             .equals => {
                 // Use the first 3 bits for the pip. The rest is a
                 // running count so that we can know when to remove it
                 // entirely.
-                const cached_pip: u3 = @truncate(state.region_cache[ri] >> 5);
-                const cached_count: u5 = @truncate(state.region_cache[ri]);
+                const cached_pip: u3 = @truncate(state.region_cache[region_index] >> 5);
+                const cached_count: u5 = @truncate(state.region_cache[region_index]);
                 if (cached_count == 0) {
-                    state.region_cache[ri] = (@as(u8, pip) << 5) | @as(u8, 1);
-                    state.region_unfilled[ri] -= 1;
+                    state.region_cache[region_index] = (@as(u8, pip) << 5) | @as(u8, 1);
+                    state.region_unfilled[region_index] -= 1;
                 } else if (cached_pip != pip) {
                     return false;
                 } else {
                     std.debug.assert(cached_count != 31); // Would corrupt the state if so
-                    state.region_cache[ri] += 1;
-                    state.region_unfilled[ri] -= 1;
+                    state.region_cache[region_index] += 1;
+                    state.region_unfilled[region_index] -= 1;
                 }
             },
             .unequal => {
                 const bit_mask: u8 = (@as(u8, 1) << @truncate(pip));
-                if (state.region_cache[ri] & bit_mask == 0) {
-                    state.region_cache[ri] |= bit_mask;
+                if (state.region_cache[region_index] & bit_mask == 0) {
+                    state.region_cache[region_index] |= bit_mask;
                 } else {
                     return false;
                 }
-                state.region_unfilled[ri] -= 1;
+                state.region_unfilled[region_index] -= 1;
                 return true;
             },
         }
         return true;
     }
 
-    pub fn removeFromRegionCache(self: *const Solver, state: *SolverState, ri: usize, pip: u8) void {
-        const r = self.regions[ri];
+    pub fn removeFromRegionCache(self: *const Solver, state: *SolverState, region_index: usize, pip: u8) void {
+        const r = self.regions[region_index];
         switch (r.type) {
             .sum, .less, .greater => {
-                state.region_cache[ri] -= pip;
-                state.region_unfilled[ri] += 1;
+                state.region_cache[region_index] -= pip;
+                state.region_unfilled[region_index] += 1;
             },
             .empty => {
-                state.region_unfilled[ri] += 1;
+                state.region_unfilled[region_index] += 1;
             },
             .equals => {
                 // Use the first 3 bits for the pip. The rest is a
                 // running count so that we can know when to remove it
                 // entirely.
-                const cached_count: u5 = @truncate(state.region_cache[ri]);
+                const cached_count: u5 = @truncate(state.region_cache[region_index]);
                 if (cached_count == 1) {
-                    state.region_cache[ri] = 0;
-                    state.region_unfilled[ri] += 1;
+                    state.region_cache[region_index] = 0;
+                    state.region_unfilled[region_index] += 1;
                 } else {
-                    state.region_cache[ri] -= 1;
-                    state.region_unfilled[ri] += 1;
+                    state.region_cache[region_index] -= 1;
+                    state.region_unfilled[region_index] += 1;
                 }
             },
             .unequal => {
                 const bit_mask: u8 = (@as(u8, 1) << @truncate(pip));
-                state.region_cache[ri] &= ~bit_mask;
-                state.region_unfilled[ri] += 1;
+                state.region_cache[region_index] &= ~bit_mask;
+                state.region_unfilled[region_index] += 1;
             },
         }
     }
 
     // Bit of a funky signature, we know the region for l1 directly, but have to scan for l2
-    pub fn addToCache(self: *const Solver, state: *SolverState, d: Domino, ri1: usize, l2: Location) bool {
-        if (!self.addToRegionCache(state, ri1, d[0])) return false;
-        if (self.addToRegionCache(state, self.location_to_region_map[l2], d[1])) {
+    pub fn addToCache(self: *const Solver, state: *SolverState, d: Domino, region_index_1: usize, region_index_2: usize) bool {
+        if (!self.addToRegionCache(state, region_index_1, d[0])) return false;
+        if (self.addToRegionCache(state, region_index_2, d[1])) {
             return true;
         }
-        self.removeFromRegionCache(state, ri1, d[0]); // roll back first insert
+        self.removeFromRegionCache(state, region_index_1, d[0]); // roll back first insert
         return false;
     }
 
     // Assumes that the removal is legit, and doesn't check status
-    pub fn removeFromCache(self: *const Solver, state: *SolverState, d: Domino, ri1: usize, l2: Location) void {
-        self.removeFromRegionCache(state, ri1, d[0]);
-        self.removeFromRegionCache(state, self.location_to_region_map[l2], d[1]);
+    pub fn removeFromCache(self: *const Solver, state: *SolverState, d: Domino, region_index_1: usize, region_index_2: usize) void {
+        self.removeFromRegionCache(state, region_index_1, d[0]);
+        self.removeFromRegionCache(state, region_index_2, d[1]);
     }
 
     pub fn printDominos(_: *const Solver, state: *const SolverState) void {
@@ -450,52 +450,52 @@ const Solver = struct {
         }
 
         const domino = self.puzzle.dominoes[state.placed_len];
-        for (0..self.region_len) |region_index| {
+        for (0..self.region_len) |region_index_1| {
             if (comptime mode == .first_solution) {
                 if (context.halt.load(.acquire)) return .Halted;
             }
-            const region = self.regions[region_index];
-            for (region.indices.items) |l1| {
+            const region = self.regions[region_index_1];
+            for (region.indices.items) |location_1| {
                 // Check l1 before calculating l2
-                if (state.locations[l1] != UnsetPip) continue;
+                if (state.locations[location_1] != UnsetPip) continue;
                 outer: for (std.enums.values(Orientation)) |orientation| {
 
                     // Don't check twin pips twice
                     if (domino[0] == domino[1] and (orientation == .left or orientation == .up)) continue :outer;
 
-                    const l2: Location = switch (orientation) {
+                    const location_2: Location = switch (orientation) {
                         .right => blk: {
-                            if (l1 % MAX_X == MAX_X - 1) continue :outer;
-                            break :blk l1 + 1;
+                            if (location_1 % MAX_X == MAX_X - 1) continue :outer;
+                            break :blk location_1 + 1;
                         },
                         .left => blk: {
-                            if (l1 % MAX_X == 0) continue :outer;
-                            break :blk l1 - 1;
+                            if (location_1 % MAX_X == 0) continue :outer;
+                            break :blk location_1 - 1;
                         },
-                        .down => l1 + MAX_X,
+                        .down => location_1 + MAX_X,
                         .up => blk: {
-                            if (l1 / MAX_X == 0) continue :outer;
-                            break :blk l1 - MAX_X;
+                            if (location_1 / MAX_X == 0) continue :outer;
+                            break :blk location_1 - MAX_X;
                         },
                     };
 
-                    if (state.locations[l2] != UnsetPip) continue :outer;
+                    if (state.locations[location_2] != UnsetPip) continue :outer;
 
-                    const ri2 = self.location_to_region_map[l2];
-                    if (region_index == ri2 and (orientation == .left or orientation == .up)) continue :outer;
+                    const region_index_2 = self.location_to_region_map[location_2];
+                    if (region_index_1 == region_index_2 and (orientation == .left or orientation == .up)) continue :outer;
 
-                    if (!self.addToCache(state, domino, region_index, l2)) continue :outer;
+                    if (!self.addToCache(state, domino, region_index_1, region_index_2)) continue :outer;
 
-                    state.locations[l1] = domino[0];
-                    state.locations[l2] = domino[1];
+                    state.locations[location_1] = domino[0];
+                    state.locations[location_2] = domino[1];
 
-                    state.push(l1, l2);
+                    state.push(location_1, location_2);
                     const validated = self.validate(state);
                     switch (validated) {
                         .InvalidBranch => {
-                            state.locations[l1] = UnsetPip;
-                            state.locations[l2] = UnsetPip;
-                            self.removeFromCache(state, domino, region_index, l2);
+                            state.locations[location_1] = UnsetPip;
+                            state.locations[location_2] = UnsetPip;
+                            self.removeFromCache(state, domino, region_index_1, region_index_2);
                             _ = state.pop();
                             continue :outer;
                         },
@@ -503,9 +503,9 @@ const Solver = struct {
                             if (comptime mode == .frontier) {
                                 if (state.placed_len == context.max_depth) {
                                     context.states.append(context.allocator, state.*) catch continue :outer;
-                                    state.locations[l1] = UnsetPip;
-                                    state.locations[l2] = UnsetPip;
-                                    self.removeFromCache(state, domino, region_index, l2);
+                                    state.locations[location_1] = UnsetPip;
+                                    state.locations[location_2] = UnsetPip;
+                                    self.removeFromCache(state, domino, region_index_1, region_index_2);
                                     _ = state.pop();
                                     continue :outer;
                                 }
@@ -513,16 +513,16 @@ const Solver = struct {
                             switch (self.search(state, mode, context)) {
                                 .Solved => return .Solved,
                                 .InvalidBranch, .NotSolved => {
-                                    state.locations[l1] = UnsetPip;
-                                    state.locations[l2] = UnsetPip;
-                                    self.removeFromCache(state, domino, region_index, l2);
+                                    state.locations[location_1] = UnsetPip;
+                                    state.locations[location_2] = UnsetPip;
+                                    self.removeFromCache(state, domino, region_index_1, region_index_2);
                                     _ = state.pop();
                                     continue :outer;
                                 },
                                 .Halted => {
-                                    state.locations[l1] = UnsetPip;
-                                    state.locations[l2] = UnsetPip;
-                                    self.removeFromCache(state, domino, region_index, l2);
+                                    state.locations[location_1] = UnsetPip;
+                                    state.locations[location_2] = UnsetPip;
+                                    self.removeFromCache(state, domino, region_index_1, region_index_2);
                                     _ = state.pop();
                                     return .Halted;
                                 },
