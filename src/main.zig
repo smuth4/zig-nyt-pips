@@ -387,7 +387,6 @@ const Solver = struct {
         }
     }
 
-    // Bit of a funky signature, we know the region for l1 directly, but have to scan for l2
     pub fn addToCache(self: *const Solver, state: *SolverState, d: Domino, region_index_1: usize, region_index_2: usize) bool {
         if (!self.addToRegionCache(state, region_index_1, d[0])) return false;
         if (self.addToRegionCache(state, region_index_2, d[1])) {
