@@ -584,6 +584,7 @@ pub fn main(init: std.process.Init) !void {
 
     // easy, medium, hard
     var solve_select: [3]bool = .{ false, false, false };
+    var multithreaded: bool = true;
 
     var args = init.minimal.args.iterate();
     _ = args.next(); // Skip $0
@@ -597,6 +598,8 @@ pub fn main(init: std.process.Init) !void {
                 solve_select[2] = true;
             } else if (std.mem.eql(u8, arg, "--all")) {
                 solve_select = .{ true, true, true };
+            } else if (std.mem.eql(u8, arg, "--single")) {
+                multithreaded = false;
             }
         } else {
             try files.append(allocator, arg);
@@ -656,11 +659,19 @@ pub fn main(init: std.process.Init) !void {
             var sol_state = solver.newState();
             var states = std.ArrayList(SolverState).empty;
             defer states.deinit(allocator);
+
             var branch_results = std.ArrayList(BranchResult).empty;
             defer branch_results.deinit(allocator);
+
+            if (multithreaded) {
+                solver.generateFrontier(&sol_state, 1, &states, allocator);
+                try branch_results.resize(allocator, states.items.len);
+            } else {
+                try states.append(allocator, sol_state);
+                try branch_results.resize(allocator, 1);
+            }
+
             var halt = std.atomic.Value(bool).init(false);
-            solver.generateFrontier(&sol_state, 1, &states, allocator);
-            try branch_results.resize(allocator, states.items.len);
             for (states.items, branch_results.items) |*state, *result| {
                 group.async(t_io.io(), solve, .{ t_io.io(), &solver, state, result, &halt });
             }
