@@ -73,6 +73,7 @@ const MAX_INDICES = 16;
 const MAX_REGIONS = 32;
 const MAX_X = 16;
 const MAX_Y = 16;
+const GRID_SIZE = MAX_X * MAX_Y;
 
 const PuzzleValidationError = error{
     TooManyDominoes,
@@ -164,7 +165,7 @@ const SolverState = struct {
     locations: [MAX_Y * MAX_Y]u8 = @splat(InvalidLocation),
     // Running total for regions
     // =, >, <: running sum
-    // equals: complicated, see addToregioncache
+    // equals: complicated, see addToRegionCache
     // empty: running count
     // notEquals: bitmap of set pips
     region_cache: [MAX_REGIONS]u8 = @splat(0),
@@ -236,9 +237,12 @@ const Solver = struct {
     regions: [MAX_REGIONS]SolverRegion,
     solution: [MAX_Y * MAX_Y]u8 = @splat(InvalidLocation),
     location_to_region_map: [MAX_Y * MAX_Y]usize,
+    adjancency_map: [MAX_X * MAX_Y][4]Location,
     region_len: usize,
 
     const Stats = struct {};
+
+    const InvalidRegion = MAX_REGIONS + 2;
 
     fn lessThan(context: void, a: Region, b: Region) std.math.Order {
         _ = context;
@@ -249,10 +253,10 @@ const Solver = struct {
         var s = Solver{
             .puzzle = puzzle,
             .region_len = puzzle.regions.len,
-            // SAFETY: Gets filled in in a specific order later
-            .regions = undefined,
-            // SAFETY: Not all of these need to be filled
-            .location_to_region_map = undefined,
+            // Fill in some reasonable defaults
+            .regions = @splat(SolverRegion{ .type = .empty }),
+            .location_to_region_map = @splat(InvalidRegion),
+            .adjancency_map = @splat(@splat(InvalidLocation)),
         };
 
         // Prioritize filling certain region types based on the enum's value
@@ -270,11 +274,36 @@ const Solver = struct {
             };
             try sr.indices.ensureTotalCapacity(gpa, region.indices.len);
             for (region.indices) |i| {
-                sr.indices.appendAssumeCapacity(coordToLoc(i));
-                s.location_to_region_map[coordToLoc(i)] = region_index;
+                const loc = coordToLoc(i);
+                sr.indices.appendAssumeCapacity(loc);
+                s.location_to_region_map[loc] = region_index;
             }
             s.regions[region_index] = sr;
             region_index += 1;
+        }
+        // Pre-compute adjacent locations
+        for (0..GRID_SIZE) |location_usize| {
+            const location: u8 = @truncate(location_usize);
+            if (s.location_to_region_map[location] == InvalidRegion) continue;
+            for (std.enums.values(Orientation), 0..) |orientation, orientation_index| {
+                const location_2: Location = switch (orientation) {
+                    .right => blk: {
+                        if (location % MAX_X == MAX_X - 1) continue;
+                        break :blk location + 1;
+                    },
+                    .left => blk: {
+                        if (location % MAX_X == 0) continue;
+                        break :blk location - 1;
+                    },
+                    .down => location + MAX_X,
+                    .up => blk: {
+                        if (location / MAX_X == 0) continue;
+                        break :blk location - MAX_X;
+                    },
+                };
+                if (s.location_to_region_map[location_2] == InvalidRegion) continue;
+                s.adjancency_map[location][orientation_index] = location_2;
+            }
         }
         for (0..puzzle.dominoes.len) |di| {
             s.solution[coordToLoc(puzzle.solution[di][0])] = puzzle.dominoes[di][0];
@@ -457,26 +486,14 @@ const Solver = struct {
             for (region.indices.items) |location_1| {
                 // Check l1 before calculating l2
                 if (state.locations[location_1] != UnsetPip) continue;
-                outer: for (std.enums.values(Orientation)) |orientation| {
+                outer: for (std.enums.values(Orientation), 0..) |orientation, orientation_index| {
 
                     // Don't check twin pips twice
                     if (domino[0] == domino[1] and (orientation == .left or orientation == .up)) continue :outer;
 
-                    const location_2: Location = switch (orientation) {
-                        .right => blk: {
-                            if (location_1 % MAX_X == MAX_X - 1) continue :outer;
-                            break :blk location_1 + 1;
-                        },
-                        .left => blk: {
-                            if (location_1 % MAX_X == 0) continue :outer;
-                            break :blk location_1 - 1;
-                        },
-                        .down => location_1 + MAX_X,
-                        .up => blk: {
-                            if (location_1 / MAX_X == 0) continue :outer;
-                            break :blk location_1 - MAX_X;
-                        },
-                    };
+                    const location_2: Location = self.adjancency_map[location_1][orientation_index];
+
+                    if (location_2 == InvalidLocation) continue :outer;
 
                     if (state.locations[location_2] != UnsetPip) continue :outer;
 
